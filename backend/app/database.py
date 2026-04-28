@@ -54,6 +54,17 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning(f"[DB] ensure_indexes failed (pg_trgm may be unavailable): {e}")
 
+    # 为 messages 表添加 extra JSONB 列（用于存储 agent 轨迹等扩展信息）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE messages ADD COLUMN IF NOT EXISTS extra JSONB DEFAULT NULL"
+            ))
+            conn.commit()
+        logging.info("[DB] messages.extra column ready")
+    except Exception as e:
+        logging.warning("[DB] alter messages.extra failed: %s", e)
+
     # HNSW 向量索引：大规模场景下比 IVFFlat 更稳定，查询时不需要预先 probe 调参
     # m=16 ef_construction=64 是官方推荐的均衡参数
     for table, col in [("chunks", "embedding"), ("memories", "embedding")]:

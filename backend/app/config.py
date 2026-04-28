@@ -26,5 +26,14 @@ class Settings(BaseSettings):
     # 0.5 对应余弦相似度 ≈ 0.75，经验上是"有一定相关性"的下限
     vector_distance_threshold: float = 0.4
 
+    # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
+    # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）
+    # SearXNG：自建实例（免费，支持代理），如 http://localhost:8888
+    searxng_url: str | None = None
+    # Tavily：https://tavily.com 申请免费 API Key（1000次/月）
+    tavily_api_key: str | None = None
+    # 搜索超时（秒），防止网络不通时长时间阻塞
+    web_search_timeout: int = 8
+
 
 settings = Settings()

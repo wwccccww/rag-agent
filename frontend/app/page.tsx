@@ -24,6 +24,8 @@ type AgentStep = {
   args?: Record<string, string>;
   result_summary?: string;
   source_count?: number;
+  elapsed_ms?: number;
+  reasoning?: string;
 };
 
 type MsgStats = { tokens: number; tok_per_sec: number };
@@ -162,15 +164,21 @@ export default function HomePage() {
     try {
       const r = await fetch(`/api/sessions/${s.id}/messages`);
       if (r.ok) {
-        const data = await r.json() as { id: string; role: string; content: string; created_at?: string }[];
+        type RawMsg = { id: string; role: string; content: string; created_at?: string; extra?: { agent_steps?: AgentStep[] } | null };
+        const data = await r.json() as RawMsg[];
         setMessages(
-          data.map((m) => ({
-            id: uid(),
-            role: m.role as "user" | "assistant",
-            content: m.content,
-            sources: [],
-            createdAt: m.created_at,
-          }))
+          data.map((m) => {
+            const steps = m.extra?.agent_steps;
+            return {
+              id: uid(),
+              role: m.role as "user" | "assistant",
+              content: m.content,
+              sources: [],
+              createdAt: m.created_at,
+              agentSteps: steps && steps.length > 0 ? steps : undefined,
+              agentMode: steps && steps.length > 0 ? true : undefined,
+            };
+          })
         );
       }
     } finally {
@@ -732,6 +740,11 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
                   {(Object.values(step.args)[0]?.toString().length ?? 0) > 40 ? "…" : ""}
                 </span>
               )}
+              {step.reasoning && (
+                <span className="agent-step-reasoning" title={step.reasoning}>
+                  💭 {step.reasoning.slice(0, 60)}{step.reasoning.length > 60 ? "…" : ""}
+                </span>
+              )}
               {step.status === "calling" && (
                 <span className="agent-step-spinner">···</span>
               )}
@@ -740,6 +753,9 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
               )}
               {step.status === "done" && (step.source_count == null || step.source_count === 0) && step.result_summary && (
                 <span className="agent-step-result">{step.result_summary.slice(0, 50)}{step.result_summary.length > 50 ? "…" : ""}</span>
+              )}
+              {step.status === "done" && step.elapsed_ms != null && (
+                <span className="agent-step-elapsed">{step.elapsed_ms}ms</span>
               )}
               <span className={`agent-step-status-dot ${step.status}`} />
             </div>

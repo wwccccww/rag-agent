@@ -1,0 +1,35 @@
+{
+  "_comment": "每条测试用例字段说明：question=问题，expected_keywords=答案中应包含的关键词（至少命中1个即通过），expected_sources=预期引用的源文件名（可选）",
+  "cases": [
+    {
+      "id": "tc_001",
+      "question": "系统支持哪些文件格式的上传？",
+      "expected_keywords": ["PDF", "DOCX", "TXT", "Markdown", "Excel"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_002",
+      "question": "如何查询用户的长期记忆？",
+      "expected_keywords": ["记忆", "memory", "user_id", "向量"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_003",
+      "question": "混合检索是如何实现的？",
+      "expected_keywords": ["向量", "关键词", "RRF", "pg_trgm", "混合"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_004",
+      "question": "HNSW 索引有什么优势？",
+      "expected_keywords": ["HNSW", "向量", "索引", "近似", "查询"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_005",
+      "question": "会话摘要是如何生成的？",
+      "expected_keywords": ["摘要", "summary", "LLM", "会话", "自动"],
+      "expected_sources": []
+    }
+  ]
+}

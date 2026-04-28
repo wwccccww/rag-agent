@@ -15,6 +15,7 @@ class MessageItem(BaseModel):
     role: str
     content: str
     created_at: str
+    extra: dict | None = None
 
 
 class SessionItem(BaseModel):
@@ -107,7 +108,13 @@ def get_messages(session_id: UUID, limit: int = Query(100, ge=1, le=500)) -> lis
             .all()
         )
         return [
-            MessageItem(id=m.id, role=m.role, content=m.content, created_at=m.created_at.isoformat())
+            MessageItem(
+                id=m.id,
+                role=m.role,
+                content=m.content,
+                created_at=m.created_at.isoformat(),
+                extra=m.extra,
+            )
             for m in rows
         ]
     finally:

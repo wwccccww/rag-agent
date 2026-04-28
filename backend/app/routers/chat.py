@@ -292,6 +292,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             # ── Agent 循环：工具决策 → 执行 ──────────────────────────
             final_messages: list[dict] = []
             agent_sources: list[dict] = []
+            steps_trace: list[dict] = []
 
             for event in run_agent(
                 db=db,
@@ -310,6 +311,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 elif etype == "result":
                     final_messages = event["messages"]
                     agent_sources = event["sources"]
+                    steps_trace = event.get("steps_trace", [])
 
             # ── 发送 sources 事件 ─────────────────────────────────────
             pub_sources = [
@@ -336,7 +338,12 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             elapsed = time.perf_counter() - t_stream_start
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
 
-            db.add(Message(session_id=sid, role="assistant", content=full))
+            db.add(Message(
+                session_id=sid,
+                role="assistant",
+                content=full,
+                extra={"agent_steps": steps_trace} if steps_trace else None,
+            ))
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
