@@ -1,10 +1,11 @@
 import json
+import logging
 from collections.abc import Iterator
 from uuid import UUID
 
 from fastapi import APIRouter
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.config import settings
 from app.database import SessionLocal
@@ -24,6 +25,7 @@ def _sse(event: str, data: dict) -> str:
 def _build_system_prompt(
     sources: list[dict],
     memory_lines: list[str],
+    session_summary: str | None = None,
 ) -> str:
     rag_lines: list[str] = []
     for i, s in enumerate(sources, start=1):
@@ -36,14 +38,58 @@ def _build_system_prompt(
     rag_block = "\n\n".join(rag_lines) if rag_lines else "(无检索片段)"
     mem_block = "\n".join(memory_lines) if memory_lines else "(无长期记忆)"
 
+    summary_section = (
+        f"\n3.【历史对话摘要】：本次会话早期对话的压缩摘要，可作为背景参考。\n{session_summary}"
+        if session_summary else ""
+    )
+
     return (
-        "你是知识库助手，拥有以下两类上下文：\n"
+        "你是知识库助手，拥有以下上下文：\n"
         "1.【长期记忆】：关于用户个人身份、偏好、背景的事实，优先用于回答用户问自身情况的问题。\n"
-        "2.【知识库片段】：文档检索结果，优先用于回答知识/内容相关问题，回答时用（见[S1][S3]）标注引用。\n"
-        "若两者均无法回答，请明确说明，不要编造。\n\n"
+        "2.【知识库片段】：文档检索结果，回答知识/内容相关问题时用（见[S1][S3]）标注引用。"
+        + ("" if not session_summary else "\n3.【历史对话摘要】：本次会话前段对话摘要，提供背景脉络。")
+        + "\n若上述内容均无法回答，请明确说明，不要编造。\n\n"
         f"【长期记忆】\n{mem_block}\n\n"
         f"【知识库片段】\n{rag_block}"
+        + (f"\n\n【历史对话摘要】\n{session_summary}" if session_summary else "")
     )
+
+
+def _maybe_summarize(db: object, client: OllamaClient, sess: SessionModel) -> None:
+    """当消息数超过阈值时自动压缩早期对话为摘要，每 10 条触发一次。"""
+    try:
+        count: int = db.execute(
+            select(func.count()).select_from(Message).where(Message.session_id == sess.id)
+        ).scalar() or 0
+
+        if count < settings.summary_threshold or count % 10 != 0:
+            return
+
+        # 取前 (count - 6) 条消息用于摘要，保留最近 6 条原文给 LLM
+        rows = (
+            db.execute(
+                select(Message)
+                .where(Message.session_id == sess.id)
+                .order_by(Message.created_at.asc())
+                .limit(count - 6)
+            )
+            .scalars()
+            .all()
+        )
+        if len(rows) < 4:
+            return
+
+        conv = "\n".join(f"{m.role}: {m.content[:300]}" for m in rows)
+        prompt = (
+            "请用简洁的中文总结以下对话的核心内容（不超过 300 字），保留关键事实、结论和用户需求：\n\n"
+            + conv[:4000]
+        )
+        summary = client.chat_complete([{"role": "user", "content": prompt}], temperature=0.3)
+        sess.summary = summary.strip()[:1000]
+        db.commit()
+        logging.info(f"[Chat] session {sess.id} summarized ({count} msgs)")
+    except Exception as e:
+        logging.warning(f"[Chat] auto-summarize failed: {e}")
 
 
 @router.post("/chat/stream")
@@ -95,7 +141,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             ]
             yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
 
-            system_prompt = _build_system_prompt(sources, mem_lines)
+            system_prompt = _build_system_prompt(sources, mem_lines, sess.summary or None)
             ollama_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
             for m in hist:
                 if m.role in ("user", "assistant"):
@@ -110,6 +156,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
+            _maybe_summarize(db, client, sess)
 
             yield _sse(
                 "final",

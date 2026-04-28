@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     chat_history_turns: int = 12
     chunk_max_chars: int = 800
     chunk_overlap: int = 100
+    # 会话消息超过此数量时触发自动摘要（每 10 条触发一次）
+    summary_threshold: int = 20
+    # 混合检索：向量权重 vs 三元组文本权重（RRF 已自动平衡，此参数保留供将来调参）
+    hybrid_search: bool = True
 
 
 settings = Settings()

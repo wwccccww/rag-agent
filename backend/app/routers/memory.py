@@ -74,7 +74,7 @@ def _extract_json(raw: str) -> dict:
 
 
 def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text: str) -> str | None:
-    """返回写入的记忆内容，若未写入则返回 None"""
+    """提取并保存长期记忆，相似度 > 0.85 则更新已有记忆而非重复新增。返回写入内容，未写入返回 None。"""
     if not re.search(r"记住|我是|我叫|我的偏好|我喜欢|我在做|我负责|我用|我擅长", user_text):
         return None
     prompt = (
@@ -95,8 +95,26 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
             return None
         content = c.strip()[:2000]
         emb = client.embed(content[:8000])
-        db.add(Memory(user_id=user_id, kind="fact", content=content, embedding=emb))
-        db.commit()
+
+        # ── 去重合并：余弦距离 < 0.15（相似度 > 0.85）则更新已有记忆 ──
+        dist_expr = Memory.embedding.cosine_distance(emb)
+        dup_row = db.execute(
+            select(Memory, dist_expr.label("dist"))
+            .where(Memory.user_id == user_id)
+            .where(dist_expr < 0.15)
+            .order_by(dist_expr)
+            .limit(1)
+        ).first()
+
+        if dup_row:
+            existing_mem, dist = dup_row
+            existing_mem.content = content
+            existing_mem.embedding = emb
+            db.commit()
+        else:
+            db.add(Memory(user_id=user_id, kind="fact", content=content, embedding=emb))
+            db.commit()
+
         return content
     except Exception:
         return None

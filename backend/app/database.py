@@ -34,17 +34,33 @@ def ensure_extensions() -> None:
     try:
         with engine.connect() as conn:
             conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
+            conn.execute(text("CREATE EXTENSION IF NOT EXISTS pg_trgm"))
             conn.commit()
-        logging.info("[DB] pgvector extension ready")
+        logging.info("[DB] extensions ready (vector + pg_trgm)")
     except Exception as e:
         logging.warning(f"[DB] ensure_extensions failed: {e}")
 
 
+def ensure_indexes() -> None:
+    """创建混合检索所需的 GIN 三元组索引（幂等）"""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_content_trgm "
+                "ON chunks USING GIN (content gin_trgm_ops)"
+            ))
+            conn.commit()
+        logging.info("[DB] GIN trgm index ready")
+    except Exception as e:
+        logging.warning(f"[DB] ensure_indexes failed (pg_trgm may be unavailable): {e}")
+
+
 def init_db() -> None:
-    """建表 + 启用 vector 扩展，失败只记日志不崩溃"""
+    """建表 + 启用扩展 + 创建索引，失败只记日志不崩溃"""
     ensure_extensions()
     try:
         Base.metadata.create_all(bind=engine)
         logging.info("[DB] tables ready")
     except Exception as e:
         logging.warning(f"[DB] create_all failed: {e}")
+    ensure_indexes()
