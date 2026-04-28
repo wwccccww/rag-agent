@@ -303,12 +303,38 @@ a:hover { text-decoration: underline; }
 .msg-row.user .msg-content { align-items: flex-end; }
 .msg-row.assistant .msg-content { align-items: flex-start; }
 
+.msg-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+  min-height: 18px;
+}
+
+.msg-row.user .msg-meta-row { justify-content: flex-end; }
+.msg-row.assistant .msg-meta-row { justify-content: flex-start; }
+
 .msg-time {
   font-size: 10px;
   color: var(--text-muted);
-  padding: 0 4px;
   opacity: 0.7;
 }
+
+.msg-copy-btn {
+  font-size: 10px;
+  color: var(--text-muted);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0 4px;
+  border-radius: 3px;
+  opacity: 0;
+  transition: opacity 0.15s, color 0.15s;
+}
+
+.msg-content:hover .msg-copy-btn { opacity: 1; }
+.msg-copy-btn:hover { color: var(--accent); }
+.msg-copy-btn:active { transform: scale(0.95); }
 
 .msg-bubble {
   padding: 10px 14px;
@@ -620,6 +646,67 @@ a:hover { text-decoration: underline; }
 .drop-zone-icon { font-size: 36px; margin-bottom: 12px; }
 .drop-zone-label { font-size: 14px; font-weight: 600; color: var(--text); margin-bottom: 4px; }
 .drop-zone-sub { font-size: 12px; color: var(--text-muted); }
+
+/* ── 批量文件列表 ── */
+.file-list {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  margin-bottom: 14px;
+}
+
+.file-list-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--panel);
+  transition: background 0.15s;
+}
+
+.file-list-item:last-of-type { border-bottom: none; }
+.file-list-item.status-success { background: rgba(40, 90, 50, 0.15); }
+.file-list-item.status-error { background: rgba(90, 30, 30, 0.15); }
+.file-list-item.status-uploading { background: var(--accent-dim); }
+
+.file-list-icon { font-size: 14px; flex-shrink: 0; }
+
+.file-list-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.file-list-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.file-list-meta { font-size: 11px; color: var(--text-muted); }
+.file-list-warn { color: var(--red); }
+.file-list-msg { color: var(--green); }
+.file-list-item.status-error .file-list-msg { color: var(--red); }
+
+.file-list-remove {
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--text-muted);
+  font-size: 12px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+  transition: color 0.15s;
+}
+
+.file-list-remove:hover { color: var(--red); }
 
 .field-label { font-size: 12px; color: var(--text-muted); margin-bottom: 6px; }
 

@@ -635,12 +635,19 @@ function formatTime(iso?: string): string {
 function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
+  const [copied, setCopied] = useState(false);
   const hasSources = (msg.sources?.length ?? 0) > 0;
 
   const handleCiteClick = (idx: number) => {
     setSourcesOpen(true);
     setHighlightIdx(idx);
     setTimeout(() => setHighlightIdx(null), 2000);
+  };
+
+  const copyContent = () => {
+    navigator.clipboard.writeText(msg.content).catch(() => {});
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
   };
 
   const timeStr = formatTime(msg.createdAt);
@@ -685,8 +692,15 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
                 : msg.content}
             </div>
           )}
-          {timeStr && !msg.streaming && (
-            <div className="msg-time">{timeStr}</div>
+          {!msg.streaming && (
+            <div className="msg-meta-row">
+              {timeStr && <span className="msg-time">{timeStr}</span>}
+              {msg.role === "assistant" && msg.content && (
+                <button className="msg-copy-btn" onClick={copyContent} title="复制回答">
+                  {copied ? "✓ 已复制" : "复制"}
+                </button>
+              )}
+            </div>
           )}
         </div>
       </div>

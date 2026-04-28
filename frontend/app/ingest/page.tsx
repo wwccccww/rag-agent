@@ -2,88 +2,142 @@
 
 import { useCallback, useRef, useState } from "react";
 
-type Result = { type: "success" | "error" | "info"; text: string };
 type Mode = "file" | "url" | "text";
+type FileStatus = "pending" | "uploading" | "success" | "dup" | "error";
+type FileEntry = { file: File; status: FileStatus; message?: string };
+type SingleResult = { type: "success" | "error" | "info"; text: string };
+
+const ALLOWED_EXTS = ["txt", "md", "pdf", "docx", "xlsx"];
+const MAX_MB = 50;
+
+function getExt(name: string) { return name.split(".").pop()?.toLowerCase() ?? ""; }
+function isExtOk(name: string) { return ALLOWED_EXTS.includes(getExt(name)); }
+function fmtSize(bytes: number) {
+  return bytes >= 1024 * 1024
+    ? `${(bytes / 1024 / 1024).toFixed(1)} MB`
+    : `${(bytes / 1024).toFixed(1)} KB`;
+}
+
+const STATUS_ICON: Record<FileStatus, string> = {
+  pending: "⏳",
+  uploading: "⬆️",
+  success: "✅",
+  dup: "⚠️",
+  error: "❌",
+};
 
 export default function IngestPage() {
   const [mode, setMode] = useState<Mode>("file");
-  const [file, setFile] = useState<File | null>(null);
+  const [files, setFiles] = useState<FileEntry[]>([]);
   const [urlInput, setUrlInput] = useState("");
   const [pasteText, setPasteText] = useState("");
   const [title, setTitle] = useState("");
   const [loading, setLoading] = useState(false);
-  const [result, setResult] = useState<Result | null>(null);
+  const [singleResult, setSingleResult] = useState<SingleResult | null>(null);
   const [over, setOver] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const handleFile = (f: File | null) => {
-    if (!f) return;
-    setFile(f);
-    setResult(null);
-  };
+  const addFiles = useCallback((newFiles: FileList | File[]) => {
+    const arr = Array.from(newFiles);
+    setFiles((prev) => {
+      const existingNames = new Set(prev.map((e) => e.file.name));
+      const added = arr
+        .filter((f) => !existingNames.has(f.name))
+        .map((f) => ({ file: f, status: "pending" as FileStatus }));
+      return [...prev, ...added];
+    });
+    setSingleResult(null);
+  }, []);
+
+  const removeFile = (idx: number) => setFiles((prev) => prev.filter((_, i) => i !== idx));
 
   const onDrop = useCallback((e: React.DragEvent) => {
     e.preventDefault();
     setOver(false);
-    const f = e.dataTransfer.files[0];
-    if (f) handleFile(f);
-  }, []);
+    if (e.dataTransfer.files.length) addFiles(e.dataTransfer.files);
+  }, [addFiles]);
 
   const onDragOver = (e: React.DragEvent) => { e.preventDefault(); setOver(true); };
   const onDragLeave = () => setOver(false);
 
   const canSubmit = () => {
     if (loading) return false;
-    if (mode === "file") return !!file && extOk;
+    if (mode === "file") return files.length > 0 && files.some((e) => isExtOk(e.file.name) && e.file.size <= MAX_MB * 1024 * 1024);
     if (mode === "url") return urlInput.trim().startsWith("http");
     if (mode === "text") return pasteText.trim().length > 0;
     return false;
   };
 
-  const submit = async () => {
-    if (!canSubmit()) return;
+  const submitFiles = async () => {
     setLoading(true);
-    setResult({ type: "info", text: mode === "url" ? "正在抓取网页并向量化…" : "正在向量化并写入 pgvector…" });
-
-    const fd = new FormData();
-    if (mode === "file" && file) {
-      fd.append("file", file);
-    } else if (mode === "url") {
-      fd.append("url", urlInput.trim());
-    } else if (mode === "text") {
-      fd.append("text", pasteText.trim());
+    for (let i = 0; i < files.length; i++) {
+      const entry = files[i];
+      if (!isExtOk(entry.file.name)) {
+        setFiles((prev) => prev.map((e, idx) => idx === i ? { ...e, status: "error", message: "格式不支持" } : e));
+        continue;
+      }
+      if (entry.file.size > MAX_MB * 1024 * 1024) {
+        setFiles((prev) => prev.map((e, idx) => idx === i ? { ...e, status: "error", message: `超过 ${MAX_MB} MB 限制` } : e));
+        continue;
+      }
+      setFiles((prev) => prev.map((e, idx) => idx === i ? { ...e, status: "uploading" } : e));
+      try {
+        const fd = new FormData();
+        fd.append("file", entry.file);
+        if (title.trim()) fd.append("title", title.trim());
+        const r = await fetch("/api/ingest", { method: "POST", body: fd });
+        const txt = await r.text();
+        if (r.ok) {
+          const data = JSON.parse(txt);
+          const isNew = data.chunks_created > 0;
+          setFiles((prev) => prev.map((e, idx) => idx === i ? {
+            ...e,
+            status: isNew ? "success" : "dup",
+            message: isNew ? `创建 ${data.chunks_created} 个片段` : "内容已存在，跳过",
+          } : e));
+        } else {
+          setFiles((prev) => prev.map((e, idx) => idx === i ? { ...e, status: "error", message: txt.slice(0, 120) } : e));
+        }
+      } catch (e) {
+        setFiles((prev) => prev.map((e2, idx) => idx === i ? { ...e2, status: "error", message: String(e) } : e2));
+      }
     }
-    if (title.trim()) fd.append("title", title.trim());
+    setLoading(false);
+  };
 
+  const submitSingle = async () => {
+    setLoading(true);
+    setSingleResult({ type: "info", text: mode === "url" ? "正在抓取网页并向量化…" : "正在向量化并写入 pgvector…" });
+    const fd = new FormData();
+    if (mode === "url") fd.append("url", urlInput.trim());
+    else fd.append("text", pasteText.trim());
+    if (title.trim()) fd.append("title", title.trim());
     try {
       const r = await fetch("/api/ingest", { method: "POST", body: fd });
       const txt = await r.text();
       if (r.ok) {
         const data = JSON.parse(txt);
         if (data.chunks_created === 0) {
-          setResult({ type: "info", text: `该内容已存在（SHA256 相同），跳过重复入库。\ndocument_id: ${data.document_id}` });
+          setSingleResult({ type: "info", text: `内容已存在（SHA256 相同），跳过。\ndocument_id: ${data.document_id}` });
         } else {
-          setResult({ type: "success", text: `✅ 入库成功！共创建 ${data.chunks_created} 个向量片段。\ndocument_id: ${data.document_id}` });
+          setSingleResult({ type: "success", text: `✅ 入库成功！共创建 ${data.chunks_created} 个向量片段。\ndocument_id: ${data.document_id}` });
+          setUrlInput(""); setPasteText(""); setTitle("");
         }
-        setFile(null);
-        setUrlInput("");
-        setPasteText("");
-        setTitle("");
-        if (inputRef.current) inputRef.current.value = "";
       } else {
-        setResult({ type: "error", text: `❌ 入库失败 (${r.status})\n${txt}` });
+        setSingleResult({ type: "error", text: `❌ 入库失败 (${r.status})\n${txt}` });
       }
     } catch (e) {
-      setResult({ type: "error", text: `❌ 请求出错: ${String(e)}` });
+      setSingleResult({ type: "error", text: `❌ 请求出错: ${String(e)}` });
     } finally {
       setLoading(false);
     }
   };
 
-  const ext = file?.name.split(".").pop()?.toLowerCase();
-  const extOk = !ext || ["txt", "md", "pdf", "docx", "xlsx"].includes(ext);
-  const fileSizeMB = file ? file.size / 1024 / 1024 : 0;
-  const isLargeFile = fileSizeMB > 20;
+  const submit = () => (mode === "file" ? submitFiles() : submitSingle());
+
+  const clearDone = () => setFiles((prev) => prev.filter((e) => e.status === "pending" || e.status === "uploading"));
+
+  const doneCount = files.filter((e) => e.status === "success" || e.status === "dup" || e.status === "error").length;
 
   return (
     <div className="ingest-layout">
@@ -95,45 +149,82 @@ export default function IngestPage() {
         分块 → <strong>nomic-embed-text</strong> 向量化 → 写入 Postgres(pgvector)。
       </p>
 
-      {/* 模式切换 Tab */}
+      {/* 模式切换 */}
       <div className="ingest-tabs">
         {(["file", "url", "text"] as Mode[]).map((m) => (
           <button
             key={m}
             className={`ingest-tab${mode === m ? " active" : ""}`}
-            onClick={() => { setMode(m); setResult(null); }}
+            onClick={() => { setMode(m); setSingleResult(null); }}
           >
             {m === "file" ? "📄 上传文件" : m === "url" ? "🌐 网页 URL" : "📝 粘贴文本"}
           </button>
         ))}
       </div>
 
-      {/* 文件上传 */}
+      {/* ── 文件上传（批量）── */}
       {mode === "file" && (
-        <div
-          className={`drop-zone${over ? " over" : ""}`}
-          onDrop={onDrop}
-          onDragOver={onDragOver}
-          onDragLeave={onDragLeave}
-          onClick={() => inputRef.current?.click()}
-        >
-          <input ref={inputRef} type="file" accept=".txt,.md,.pdf,.docx,.xlsx" onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
-          <div className="drop-zone-icon">{file ? "📄" : "☁️"}</div>
-          {file ? (
-            <>
-              <div className="drop-zone-label">{file.name}</div>
-              <div className="drop-zone-sub">
-                {(file.size / 1024).toFixed(1)} KB
-                {!extOk && <span style={{ color: "var(--red)" }}> · 格式不支持</span>}
-              </div>
-            </>
-          ) : (
-            <>
-              <div className="drop-zone-label">点击或拖拽文件到此处</div>
-              <div className="drop-zone-sub">.txt · .md · .pdf · .docx · .xlsx</div>
-            </>
+        <>
+          <div
+            className={`drop-zone${over ? " over" : ""}`}
+            onDrop={onDrop}
+            onDragOver={onDragOver}
+            onDragLeave={onDragLeave}
+            onClick={() => inputRef.current?.click()}
+          >
+            <input
+              ref={inputRef}
+              type="file"
+              multiple
+              accept=".txt,.md,.pdf,.docx,.xlsx"
+              aria-label="选择文件（支持多选）"
+              onChange={(e) => e.target.files && addFiles(e.target.files)}
+            />
+            <div className="drop-zone-icon">{files.length > 0 ? "📂" : "☁️"}</div>
+            {files.length > 0 ? (
+              <>
+                <div className="drop-zone-label">已选 {files.length} 个文件（点击继续添加）</div>
+                <div className="drop-zone-sub">.txt · .md · .pdf · .docx · .xlsx，单文件最大 {MAX_MB} MB</div>
+              </>
+            ) : (
+              <>
+                <div className="drop-zone-label">点击或拖拽文件到此处（支持多选）</div>
+                <div className="drop-zone-sub">.txt · .md · .pdf · .docx · .xlsx，单文件最大 {MAX_MB} MB</div>
+              </>
+            )}
+          </div>
+
+          {files.length > 0 && (
+            <div className="file-list">
+              {files.map((entry, i) => {
+                const extOk = isExtOk(entry.file.name);
+                const tooBig = entry.file.size > MAX_MB * 1024 * 1024;
+                const warn = !extOk ? "格式不支持" : tooBig ? `超过 ${MAX_MB} MB` : null;
+                return (
+                  <div key={i} className={`file-list-item status-${entry.status}`}>
+                    <span className="file-list-icon">{STATUS_ICON[entry.status]}</span>
+                    <div className="file-list-info">
+                      <span className="file-list-name">{entry.file.name}</span>
+                      <span className="file-list-meta">
+                        {fmtSize(entry.file.size)}
+                        {warn && <span className="file-list-warn"> · {warn}</span>}
+                        {entry.message && <span className="file-list-msg"> · {entry.message}</span>}
+                      </span>
+                    </div>
+                    {entry.status === "pending" && (
+                      <button className="file-list-remove" onClick={() => removeFile(i)} title="移除">✕</button>
+                    )}
+                  </div>
+                );
+              })}
+              {doneCount > 0 && (
+                <button className="btn" style={{ marginTop: 6, fontSize: 11 }} onClick={clearDone}>
+                  清除已完成 ({doneCount})
+                </button>
+              )}
+            </div>
           )}
-        </div>
+        </>
       )}
 
       {/* URL 输入 */}
@@ -170,21 +261,17 @@ export default function IngestPage() {
         </div>
       )}
 
-      <div style={{ marginBottom: 14 }}>
-        <div className="field-label">自定义标题（可选）</div>
-        <input
-          className="text-input"
-          type="text"
-          value={title}
-          onChange={(e) => setTitle(e.target.value)}
-          placeholder="例如：产品说明文档"
-          aria-label="文档标题"
-        />
-      </div>
-
-      {mode === "file" && isLargeFile && extOk && (
-        <div className="result-block info" style={{ marginBottom: 10 }}>
-          ⚠️ 文件较大（{fileSizeMB.toFixed(1)} MB），入库过程可能需要数分钟，请耐心等待。
+      {mode !== "file" && (
+        <div style={{ marginBottom: 14 }}>
+          <div className="field-label">自定义标题（可选）</div>
+          <input
+            className="text-input"
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="例如：产品说明文档"
+            aria-label="文档标题"
+          />
         </div>
       )}
 
@@ -194,12 +281,16 @@ export default function IngestPage() {
         disabled={!canSubmit()}
         style={{ width: "100%", justifyContent: "center", padding: "10px" }}
       >
-        {loading ? "处理中…" : mode === "url" ? "抓取并入库" : "上传并入库"}
+        {loading
+          ? "处理中…"
+          : mode === "file"
+            ? files.length > 1 ? `上传 ${files.filter((e) => e.status === "pending").length} 个文件` : "上传并入库"
+            : mode === "url" ? "抓取并入库" : "上传并入库"}
       </button>
 
-      {result && (
-        <div className={`result-block ${result.type}`} style={{ whiteSpace: "pre-wrap" }}>
-          {result.text}
+      {singleResult && (
+        <div className={`result-block ${singleResult.type}`} style={{ whiteSpace: "pre-wrap", marginTop: 12 }}>
+          {singleResult.text}
         </div>
       )}
     </div>

@@ -17,6 +17,18 @@ def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+_MIN_CHUNK_CHARS = 30  # 过短的 chunk 不含实质信息，跳过
+
+
+def _extract_md_title(text: str) -> str | None:
+    """从 Markdown 文本中提取第一个 H1 标题（# 开头的行）。"""
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# ") and len(stripped) > 2:
+            return stripped[2:].strip()[:200]
+    return None
+
+
 def ingest_bytes(
     db: Session,
     ollama: OllamaClient,
@@ -28,6 +40,10 @@ def ingest_bytes(
     text = extract_text(filename, data)
     if not text.strip():
         raise ValueError("empty document text")
+
+    # Markdown 文件：若未提供 title，从 H1 标题自动提取
+    if title is None and filename.lower().endswith(".md"):
+        title = _extract_md_title(text)
 
     h = sha256_bytes(data)
     existing = db.execute(select(Document).where(Document.content_sha256 == h)).scalar_one_or_none()
@@ -43,6 +59,12 @@ def ingest_bytes(
     db.flush()
 
     pairs = chunk_text(text, settings.chunk_max_chars, settings.chunk_overlap)
+    # 过滤无实质内容的短片段
+    pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
+    if not pairs:
+        db.rollback()
+        raise ValueError("document has no usable content after chunking")
+
     n = 0
     for content, meta in pairs:
         emb = ollama.embed(content[:8000])
@@ -56,6 +78,7 @@ def ingest_bytes(
         db.add(ch)
         n += 1
     db.commit()
+    logging.info("[RAG] ingested %s → %d chunks (filtered short chunks)", filename, n)
     return doc.id, n
 
 
