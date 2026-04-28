@@ -1,6 +1,6 @@
 from uuid import UUID
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -22,6 +22,10 @@ class SessionItem(BaseModel):
     user_id: str
     summary: str | None
     created_at: str
+
+
+class SessionUpdate(BaseModel):
+    summary: str
 
 
 @router.get("/sessions", response_model=list[SessionItem])
@@ -47,6 +51,40 @@ def list_sessions(user_id: str = Query("demo"), limit: int = Query(30, ge=1, le=
             )
             for s in rows
         ]
+    finally:
+        db.close()
+
+
+@router.patch("/sessions/{session_id}", response_model=SessionItem)
+def rename_session(session_id: UUID, body: SessionUpdate) -> SessionItem:
+    db = SessionLocal()
+    try:
+        sess = db.get(SessionModel, session_id)
+        if not sess:
+            raise HTTPException(404, "session not found")
+        sess.summary = body.summary.strip()[:200]
+        db.commit()
+        db.refresh(sess)
+        return SessionItem(
+            id=sess.id,
+            user_id=sess.user_id,
+            summary=sess.summary,
+            created_at=sess.created_at.isoformat(),
+        )
+    finally:
+        db.close()
+
+
+@router.delete("/sessions/{session_id}", status_code=204)
+def delete_session(session_id: UUID) -> Response:
+    db = SessionLocal()
+    try:
+        sess = db.get(SessionModel, session_id)
+        if not sess:
+            raise HTTPException(404, "session not found")
+        db.delete(sess)
+        db.commit()
+        return Response(status_code=204)
     finally:
         db.close()
 

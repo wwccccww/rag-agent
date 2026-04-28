@@ -53,8 +53,12 @@ export default function HomePage() {
   const [healthLoading, setHealthLoading] = useState(false);
   const [memToast, setMemToast] = useState<string | null>(null);
   const [syncing, setSyncing] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editLabel, setEditLabel] = useState("");
+  const [deletingId, setDeletingId] = useState<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const editInputRef = useRef<HTMLInputElement>(null);
 
   // 初始化：从 localStorage 恢复会话列表，同时从服务器同步
   useEffect(() => {
@@ -152,6 +156,51 @@ export default function HomePage() {
     },
     []
   );
+
+  const startRename = (s: Session, e: React.MouseEvent) => {
+    e.stopPropagation();
+    setEditingId(s.id);
+    setEditLabel(s.label);
+    setTimeout(() => editInputRef.current?.select(), 30);
+  };
+
+  const commitRename = async (id: string) => {
+    const label = editLabel.trim();
+    if (!label) { setEditingId(null); return; }
+    setSessions((prev) => {
+      const next = prev.map((s) => (s.id === id ? { ...s, label } : s));
+      saveSessions(userId, next);
+      return next;
+    });
+    setEditingId(null);
+    try {
+      await fetch(`/api/sessions/${id}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ summary: label }),
+      });
+    } catch {}
+  };
+
+  const deleteSession = async (id: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (deletingId === id) {
+      setDeletingId(null);
+      setSessions((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        saveSessions(userId, next);
+        return next;
+      });
+      if (currentSession === id) {
+        setCurrentSession(null);
+        setMessages([]);
+      }
+      try { await fetch(`/api/sessions/${id}`, { method: "DELETE" }); } catch {}
+    } else {
+      setDeletingId(id);
+      setTimeout(() => setDeletingId((cur) => (cur === id ? null : cur)), 3000);
+    }
+  };
 
   const pingHealth = async () => {
     setHealthLoading(true);
@@ -266,9 +315,9 @@ export default function HomePage() {
               onClick={syncNow}
               disabled={syncing}
               title="从服务器同步历史会话"
-              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "var(--text-muted)", padding: "2px 4px" }}
+              className={`sync-btn${syncing ? " spinning" : ""}`}
             >
-              {syncing ? "⏳" : "↻"}
+              ↻
             </button>
           </div>
           <div
@@ -282,10 +331,43 @@ export default function HomePage() {
             <div
               key={s.id}
               className={`sidebar-session ${currentSession === s.id ? "active" : ""}`}
-              onClick={() => loadSession(s)}
+              onClick={() => editingId !== s.id && loadSession(s)}
+              onDoubleClick={(e) => startRename(s, e)}
             >
               <div className="sidebar-session-icon">💬</div>
-              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
+              {editingId === s.id ? (
+                <input
+                  ref={editInputRef}
+                  className="session-rename-input"
+                  placeholder="会话名称"
+                  aria-label="重命名会话"
+                  value={editLabel}
+                  onChange={(e) => setEditLabel(e.target.value)}
+                  onBlur={() => commitRename(s.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") commitRename(s.id);
+                    if (e.key === "Escape") setEditingId(null);
+                    e.stopPropagation();
+                  }}
+                  onClick={(e) => e.stopPropagation()}
+                />
+              ) : (
+                <span className="session-label">{s.label}</span>
+              )}
+              <div className="session-actions">
+                <button
+                  className="session-action-btn"
+                  title="重命名（双击也可）"
+                  onClick={(e) => startRename(s, e)}
+                >✏️</button>
+                <button
+                  className={`session-action-btn${deletingId === s.id ? " danger" : ""}`}
+                  title={deletingId === s.id ? "再次点击确认删除" : "删除会话"}
+                  onClick={(e) => deleteSession(s.id, e)}
+                >
+                  {deletingId === s.id ? "确认" : "🗑"}
+                </button>
+              </div>
             </div>
           ))}
         </div>
