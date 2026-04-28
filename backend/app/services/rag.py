@@ -159,8 +159,6 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
         if len(top_ids) >= top_k:
             break
 
-    max_rrf = max(rrf.values()) if rrf else 1.0
-
     out: list[dict[str, Any]] = []
     for cid in top_ids:
         ch, doc = chunk_map[cid]
@@ -171,7 +169,8 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
                 "chunk_id": ch.id,
                 "source": doc.source,
                 "page": page,
-                "score": round(rrf[cid] / max_rrf, 4),  # 归一化到 [0,1]
+                # 显示真实余弦相似度，chunk 不在向量结果中时退回 0
+                "score": vec_similarity.get(cid, 0.0),
                 "snippet": snippet,
                 "full_content": ch.content,
             }
