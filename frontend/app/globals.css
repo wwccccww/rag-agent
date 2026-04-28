@@ -1,36 +1,38 @@
 :root {
-  --bg: #0d1117;
-  --sidebar-bg: #161b22;
-  --panel: #1c2333;
-  --panel-hover: #22304a;
-  --border: #30363d;
-  --border-light: #21262d;
-  --text: #e6edf3;
-  --text-muted: #8b949e;
-  --text-dim: #484f58;
-  --accent: #58a6ff;
-  --accent-dim: #1f3a5f;
-  --green: #3fb950;
-  --green-dim: #1a3a25;
+  --bg: #080e1a;
+  --bg-grad-start: #0a1020;
+  --bg-grad-end: #060b14;
+  --sidebar-bg: #0c1422;
+  --panel: #111c2e;
+  --panel-hover: #172338;
+  --border: #1e2d45;
+  --border-light: #162133;
+  --text: #dde6f5;
+  --text-muted: #7b8fac;
+  --text-dim: #3a4d66;
+  --accent: #4f9eff;
+  --accent-dim: #0f2545;
+  --green: #34c764;
+  --green-dim: #0d2b1c;
   --red: #f85149;
-  --user-bubble: #1f3a5f;
-  --user-border: #2f5ba3;
-  --assistant-bubble: #1c2333;
-  --assistant-border: #30363d;
-  --input-bg: #161b22;
-  --scrollbar: #30363d;
+  --user-bubble: #0f2545;
+  --user-border: #1e4a8a;
+  --assistant-bubble: #0e1a2e;
+  --assistant-border: #1e2d45;
+  --input-bg: #0c1422;
+  --scrollbar: #1e2d45;
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
 html, body {
   height: 100%;
-  background: var(--bg);
   color: var(--text);
   font-family: ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   font-size: 14px;
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
+  background-color: var(--bg);
 }
 
 ::-webkit-scrollbar { width: 6px; height: 6px; }
@@ -51,11 +53,12 @@ a:hover { text-decoration: underline; }
 .sidebar {
   width: 240px;
   flex-shrink: 0;
-  background: var(--sidebar-bg);
+  background: linear-gradient(180deg, #0d1828 0%, #090f1c 100%);
   border-right: 1px solid var(--border);
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  box-shadow: 2px 0 20px rgba(0, 0, 0, 0.4);
 }
 
 .sidebar-header {
@@ -129,6 +132,13 @@ a:hover { text-decoration: underline; }
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  /* dot-grid background */
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(ellipse 80% 60% at 60% 10%, rgba(30, 80, 180, 0.10) 0%, transparent 70%),
+    radial-gradient(ellipse 50% 40% at 10% 80%, rgba(20, 60, 140, 0.07) 0%, transparent 60%),
+    radial-gradient(circle at 1px 1px, rgba(80, 140, 255, 0.12) 1px, transparent 0);
+  background-size: 100% 100%, 100% 100%, 28px 28px;
 }
 
 /* ── Topbar ── */
@@ -140,7 +150,9 @@ a:hover { text-decoration: underline; }
   padding: 0 20px;
   gap: 12px;
   flex-shrink: 0;
-  background: var(--bg);
+  background: rgba(8, 14, 26, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .topbar-title {
@@ -225,15 +237,19 @@ a:hover { text-decoration: underline; }
 }
 
 .msg-bubble.user {
-  background: var(--user-bubble);
+  background: rgba(15, 37, 69, 0.85);
   border: 1px solid var(--user-border);
   border-top-right-radius: 4px;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 60, 180, 0.12);
 }
 
 .msg-bubble.assistant {
-  background: var(--assistant-bubble);
+  background: rgba(14, 26, 46, 0.80);
   border: 1px solid var(--assistant-border);
   border-top-left-radius: 4px;
+  backdrop-filter: blur(4px);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.2);
 }
 
 .msg-bubble.streaming::after {
@@ -314,7 +330,9 @@ a:hover { text-decoration: underline; }
 .input-bar {
   padding: 12px 20px 16px;
   border-top: 1px solid var(--border);
-  background: var(--bg);
+  background: rgba(8, 14, 26, 0.85);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
 }
 
 .input-wrap {
@@ -477,9 +495,20 @@ a:hover { text-decoration: underline; }
   padding: 40px;
 }
 
-.empty-state-icon { font-size: 48px; margin-bottom: 8px; }
-.empty-state h3 { font-size: 16px; font-weight: 600; color: var(--text); }
-.empty-state p { font-size: 13px; max-width: 340px; }
+.empty-state-icon {
+  font-size: 56px;
+  margin-bottom: 8px;
+  filter: drop-shadow(0 0 24px rgba(79, 158, 255, 0.5));
+  animation: float 4s ease-in-out infinite;
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+.empty-state h3 { font-size: 17px; font-weight: 700; color: var(--text); letter-spacing: 0.2px; }
+.empty-state p { font-size: 13px; max-width: 360px; line-height: 1.7; }
 
 /* ── Health popup ── */
 .health-pop {
