@@ -1,16 +1,21 @@
+import logging
+import threading
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.database import Base, engine, ensure_extensions
+from app.database import Base, engine, init_db
 from app.routers import chat, docs, health, ingest, memory, sessions
+
+logging.basicConfig(level=logging.INFO)
 
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    ensure_extensions()
-    Base.metadata.create_all(bind=engine)
+    # 在后台线程做 DB 初始化，不阻塞主进程启动
+    t = threading.Thread(target=init_db, daemon=True)
+    t.start()
     yield
 
 

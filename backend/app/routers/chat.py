@@ -37,9 +37,10 @@ def _build_system_prompt(
     mem_block = "\n".join(memory_lines) if memory_lines else "(无长期记忆)"
 
     return (
-        "你是知识库助手。优先依据下方【知识库片段】作答；必要时参考【长期记忆】。\n"
-        "若知识库不足以回答，请明确说明并避免编造。\n"
-        "回答时请用引用标记如（见[S1][S3]）指向对应片段。\n\n"
+        "你是知识库助手，拥有以下两类上下文：\n"
+        "1.【长期记忆】：关于用户个人身份、偏好、背景的事实，优先用于回答用户问自身情况的问题。\n"
+        "2.【知识库片段】：文档检索结果，优先用于回答知识/内容相关问题，回答时用（见[S1][S3]）标注引用。\n"
+        "若两者均无法回答，请明确说明，不要编造。\n\n"
         f"【长期记忆】\n{mem_block}\n\n"
         f"【知识库片段】\n{rag_block}"
     )
@@ -108,13 +109,13 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             db.add(Message(session_id=sid, role="assistant", content=full))
             db.commit()
 
-            maybe_auto_memory(db, client, body.user_id, body.message)
+            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
 
             yield _sse(
                 "final",
                 {
                     "session_id": str(sid),
-                    "memory_writes": [],
+                    "memory_writes": [mem_written] if mem_written else [],
                 },
             )
         except Exception as e:

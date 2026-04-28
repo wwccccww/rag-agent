@@ -57,28 +57,46 @@ def forget_memory(memory_id: UUID, user_id: str = Query("demo")) -> dict:
         db.close()
 
 
-def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text: str) -> None:
-    if not re.search(r"记住|我是|我叫|我的偏好|我喜欢|我在做", user_text):
-        return
+def _extract_json(raw: str) -> dict:
+    """兼容 LLM 把 JSON 包在 ```json ... ``` 里的情况"""
+    text = raw.strip()
+    # 剥掉 markdown 代码块
+    if text.startswith("```"):
+        lines = text.splitlines()
+        inner = [l for l in lines if not l.startswith("```")]
+        text = "\n".join(inner).strip()
+    # 找第一个 { 到最后一个 }
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        text = text[start : end + 1]
+    return json.loads(text)
+
+
+def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text: str) -> str | None:
+    """返回写入的记忆内容，若未写入则返回 None"""
+    if not re.search(r"记住|我是|我叫|我的偏好|我喜欢|我在做|我负责|我用|我擅长", user_text):
+        return None
     prompt = (
-        "从用户这句话提取一条可长期保存的记忆（事实/偏好/身份），只输出JSON，不要其它文字。"
-        '格式：{"content":"..."} 若无可保存内容则 {"content":null}\n用户：'
-        + user_text[:2000]
+        "请从下面这句用户的话中提取一条可长期保存的个人信息（身份/偏好/技能/正在做的事）。\n"
+        "只输出纯 JSON，绝对不要输出其他任何文字或 markdown。\n"
+        '格式：{"content": "提取到的信息"}\n'
+        '如果没有值得保存的信息，输出：{"content": null}\n\n'
+        "用户：" + user_text[:2000]
     )
-    raw = client.chat_complete(
-        [{"role": "user", "content": prompt}],
-        temperature=0.1,
-    )
-    content: str | None = None
     try:
-        obj = json.loads(raw)
+        raw = client.chat_complete(
+            [{"role": "user", "content": prompt}],
+            temperature=0.0,
+        )
+        obj = _extract_json(raw)
         c = obj.get("content")
-        if isinstance(c, str) and c.strip():
-            content = c.strip()[:2000]
-    except json.JSONDecodeError:
-        return
-    if not content:
-        return
-    emb = client.embed(content[:8000])
-    db.add(Memory(user_id=user_id, kind="fact", content=content, embedding=emb))
-    db.commit()
+        if not isinstance(c, str) or not c.strip():
+            return None
+        content = c.strip()[:2000]
+        emb = client.embed(content[:8000])
+        db.add(Memory(user_id=user_id, kind="fact", content=content, embedding=emb))
+        db.commit()
+        return content
+    except Exception:
+        return None

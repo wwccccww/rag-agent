@@ -17,7 +17,11 @@ export default function DocumentsPage() {
     setLoading(true);
     try {
       const r = await fetch("/api/documents");
-      setDocs(await r.json());
+      if (!r.ok) return;
+      const data = await r.json().catch(() => []);
+      setDocs(Array.isArray(data) ? data : []);
+    } catch {
+      // backend not ready, silently ignore
     } finally {
       setLoading(false);
     }
@@ -31,7 +35,11 @@ export default function DocumentsPage() {
     setChunksLoading(true);
     try {
       const r = await fetch(`/api/documents/${doc.id}/chunks`);
-      setChunks(await r.json());
+      if (!r.ok) return;
+      const data = await r.json().catch(() => []);
+      setChunks(Array.isArray(data) ? data : []);
+    } catch {
+      // backend not ready
     } finally {
       setChunksLoading(false);
     }

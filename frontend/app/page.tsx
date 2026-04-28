@@ -51,14 +51,53 @@ export default function HomePage() {
   const [histLoading, setHistLoading] = useState(false);
   const [health, setHealth] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [memToast, setMemToast] = useState<string | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 初始化：从 localStorage 恢复会话列表
+  // 初始化：从 localStorage 恢复会话列表，同时从服务器同步
   useEffect(() => {
     const stored = loadSessions(userId);
     setSessions(stored);
+    // 自动从服务器补全本地没有的历史会话
+    syncSessionsFromServer(userId, stored).then((merged) => {
+      if (merged.length > stored.length) {
+        setSessions(merged);
+        saveSessions(userId, merged);
+      }
+    });
   }, [userId]);
+
+  const syncSessionsFromServer = async (uid: string, existing: Session[]): Promise<Session[]> => {
+    try {
+      const r = await fetch(`/api/sessions?user_id=${encodeURIComponent(uid)}&limit=50`);
+      if (!r.ok) return existing;
+      const data = await r.json() as { id: string; created_at: string }[];
+      const existingIds = new Set(existing.map((s) => s.id));
+      const newOnes: Session[] = data
+        .filter((s) => !existingIds.has(s.id))
+        .map((s) => ({
+          id: s.id,
+          label: `历史会话 ${new Date(s.created_at).toLocaleDateString("zh-CN")}`,
+        }));
+      if (newOnes.length === 0) return existing;
+      return [...newOnes, ...existing];
+    } catch {
+      return existing;
+    }
+  };
+
+  const syncNow = async () => {
+    setSyncing(true);
+    try {
+      const merged = await syncSessionsFromServer(userId, sessions);
+      setSessions(merged);
+      saveSessions(userId, merged);
+    } finally {
+      setSyncing(false);
+    }
+  };
 
   // 消息变化时滚到底
   useEffect(() => {
@@ -183,6 +222,13 @@ export default function HomePage() {
           m.map((msg) => (msg.id === aId ? { ...msg, content: msg.content + delta } : msg))
         );
       }
+      if (event === "final" && data && typeof data === "object") {
+        const writes = (data as { memory_writes?: string[] }).memory_writes ?? [];
+        if (writes.length > 0) {
+          setMemToast(`💾 已记住：${writes[0]}`);
+          setTimeout(() => setMemToast(null), 5000);
+        }
+      }
       if (event === "error" && data && typeof data === "object") {
         const msg = (data as { message?: string }).message ?? "未知错误";
         setMessages((m) =>
@@ -214,7 +260,17 @@ export default function HomePage() {
         </div>
 
         <div className="sidebar-body">
-          <div className="sidebar-section-label">会话</div>
+          <div className="sidebar-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: 10 }}>
+            <span>会话</span>
+            <button
+              onClick={syncNow}
+              disabled={syncing}
+              title="从服务器同步历史会话"
+              style={{ background: "none", border: "none", cursor: "pointer", fontSize: 12, color: "var(--text-muted)", padding: "2px 4px" }}
+            >
+              {syncing ? "⏳" : "↻"}
+            </button>
+          </div>
           <div
             className={`sidebar-session ${!currentSession ? "active" : ""}`}
             onClick={startNewSession}
@@ -244,6 +300,7 @@ export default function HomePage() {
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
             <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>
             <a href="/documents" className="btn" style={{ width: "100%", justifyContent: "center" }}>🔍 查看文档库</a>
+            <a href={`/memory?user_id=${userId}`} className="btn" style={{ width: "100%", justifyContent: "center" }}>🧠 查看记忆</a>
             <button className="btn" style={{ width: "100%", justifyContent: "center" }} onClick={pingHealth} disabled={healthLoading}>
               {healthLoading ? "检查中…" : "⚡ 健康检查"}
             </button>
@@ -257,6 +314,11 @@ export default function HomePage() {
           <span className="topbar-title">
             {currentSession ? `会话 ${currentSession.slice(0, 8)}…` : "新对话"}
           </span>
+          {memToast && (
+            <span className="badge green" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {memToast}
+            </span>
+          )}
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
         </div>
