@@ -2,6 +2,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from app.config import settings
 from app.database import SessionLocal
 from app.schemas import IngestResponse
 from app.services.ollama import OllamaClient
@@ -26,6 +27,9 @@ async def ingest(
             raw = await file.read()
             if not raw:
                 raise HTTPException(400, "empty file")
+            max_bytes = settings.max_upload_mb * 1024 * 1024
+            if len(raw) > max_bytes:
+                raise HTTPException(413, f"文件过大（{len(raw) // 1024 // 1024} MB），上限为 {settings.max_upload_mb} MB")
             filename = file.filename or "upload.bin"
             data = raw
             ingest_source = source or filename

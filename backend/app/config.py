@@ -19,6 +19,8 @@ class Settings(BaseSettings):
     hybrid_search: bool = True
     # 查询改写：对话前用 LLM 生成 2 个备选查询，多路召回合并（增加召回率，会多一次 LLM 调用）
     query_rewrite: bool = True
+    # 上传文件大小上限（MB），防止超大文件导致内存耗尽
+    max_upload_mb: int = 50
 
 
 settings = Settings()

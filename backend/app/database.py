@@ -42,7 +42,7 @@ def ensure_extensions() -> None:
 
 
 def ensure_indexes() -> None:
-    """创建混合检索所需的 GIN 三元组索引（幂等）"""
+    """创建混合检索所需索引（幂等）：GIN 三元组 + HNSW 向量索引"""
     try:
         with engine.connect() as conn:
             conn.execute(text(
@@ -53,6 +53,22 @@ def ensure_indexes() -> None:
         logging.info("[DB] GIN trgm index ready")
     except Exception as e:
         logging.warning(f"[DB] ensure_indexes failed (pg_trgm may be unavailable): {e}")
+
+    # HNSW 向量索引：大规模场景下比 IVFFlat 更稳定，查询时不需要预先 probe 调参
+    # m=16 ef_construction=64 是官方推荐的均衡参数
+    for table, col in [("chunks", "embedding"), ("memories", "embedding")]:
+        idx_name = f"idx_{table}_{col}_hnsw"
+        try:
+            with engine.connect() as conn:
+                conn.execute(text(
+                    f"CREATE INDEX IF NOT EXISTS {idx_name} "
+                    f"ON {table} USING hnsw ({col} vector_cosine_ops) "
+                    f"WITH (m = 16, ef_construction = 64)"
+                ))
+                conn.commit()
+            logging.info("[DB] HNSW index ready: %s", idx_name)
+        except Exception as e:
+            logging.warning("[DB] HNSW index failed for %s: %s", idx_name, e)
 
 
 def init_db() -> None:

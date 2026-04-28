@@ -36,7 +36,7 @@ def list_sessions(user_id: str = Query("demo"), limit: int = Query(30, ge=1, le=
             db.execute(
                 select(SessionModel)
                 .where(SessionModel.user_id == user_id)
-                .order_by(SessionModel.created_at.desc())
+                .order_by(SessionModel.updated_at.desc())
                 .limit(limit)
             )
             .scalars()

@@ -26,9 +26,24 @@ type ChatMsg = {
 type Session = { id: string; label: string };
 
 const SESSION_KEY = (userId: string) => `rag_sessions_${userId}`;
+const USER_ID_KEY = "rag_user_id";
 
 let _uid = 0;
 const uid = () => ++_uid;
+
+function loadUserId(): string {
+  try {
+    return localStorage.getItem(USER_ID_KEY) || "demo";
+  } catch {
+    return "demo";
+  }
+}
+
+function saveUserId(id: string) {
+  try {
+    localStorage.setItem(USER_ID_KEY, id);
+  } catch {}
+}
 
 function loadSessions(userId: string): Session[] {
   try {
@@ -46,7 +61,7 @@ function saveSessions(userId: string, sessions: Session[]) {
 }
 
 export default function HomePage() {
-  const [userId, setUserId] = useState("demo");
+  const [userId, setUserId] = useState(loadUserId);
   const [sessions, setSessions] = useState<Session[]>([]);
   const [currentSession, setCurrentSession] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -81,13 +96,13 @@ export default function HomePage() {
     try {
       const r = await fetch(`/api/sessions?user_id=${encodeURIComponent(uid)}&limit=50`);
       if (!r.ok) return existing;
-      const data = await r.json() as { id: string; created_at: string }[];
+      const data = await r.json() as { id: string; summary?: string | null; created_at: string }[];
       const existingIds = new Set(existing.map((s) => s.id));
       const newOnes: Session[] = data
         .filter((s) => !existingIds.has(s.id))
         .map((s) => ({
           id: s.id,
-          label: `历史会话 ${new Date(s.created_at).toLocaleDateString("zh-CN")}`,
+          label: s.summary?.trim() || `历史会话 ${new Date(s.created_at).toLocaleDateString("zh-CN")}`,
         }));
       if (newOnes.length === 0) return existing;
       return [...newOnes, ...existing];
@@ -214,7 +229,20 @@ export default function HomePage() {
     const lines: string[] = [`# ${sessionLabel}`, `> 导出时间：${new Date().toLocaleString("zh-CN")}`, ""];
     for (const msg of messages) {
       if (msg.streaming) continue;
-      lines.push(msg.role === "user" ? `**用户**\n\n${msg.content}` : `**助手**\n\n${msg.content}`);
+      if (msg.role === "user") {
+        lines.push(`**用户**\n\n${msg.content}`);
+      } else {
+        lines.push(`**助手**\n\n${msg.content}`);
+        if (msg.sources && msg.sources.length > 0) {
+          lines.push("\n**参考来源：**");
+          msg.sources.forEach((s, i) => {
+            const page = s.page != null ? ` 第${s.page}页` : "";
+            const score = s.score != null ? ` (${(s.score * 100).toFixed(0)}%)` : "";
+            lines.push(`- [S${i + 1}] ${s.source ?? "未知来源"}${page}${score}`);
+            if (s.snippet) lines.push(`  > ${s.snippet.slice(0, 120).replace(/\n/g, " ")}`);
+          });
+        }
+      }
       lines.push("\n---\n");
     }
     const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
@@ -402,7 +430,7 @@ export default function HomePage() {
             aria-label="用户 ID"
             placeholder="demo"
             value={userId}
-            onChange={(e) => setUserId(e.target.value)}
+            onChange={(e) => { setUserId(e.target.value); saveUserId(e.target.value); }}
           />
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
             <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>

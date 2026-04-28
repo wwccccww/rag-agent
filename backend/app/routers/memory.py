@@ -75,7 +75,12 @@ def _extract_json(raw: str) -> dict:
 
 def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text: str) -> str | None:
     """提取并保存长期记忆，相似度 > 0.85 则更新已有记忆而非重复新增。返回写入内容，未写入返回 None。"""
-    if not re.search(r"记住|我是|我叫|我的偏好|我喜欢|我在做|我负责|我用|我擅长", user_text):
+    _MEMORY_TRIGGER = re.compile(
+        r"记住|我是|我叫|我的|我有|我在|我会|我喜欢|我讨厌|我不喜欢|我偏好|我擅长|我负责|我用|"
+        r"我做|我参与|我学|我工作|我住|我来自|帮我记|请记住|我的目标|我的项目|我的团队|"
+        r"我的公司|我的职位|我的爱好|我的习惯|我的背景|我的经验|我叫做|我的名字"
+    )
+    if not _MEMORY_TRIGGER.search(user_text):
         return None
     prompt = (
         "请从下面这句用户的话中提取一条可长期保存的个人信息（身份/偏好/技能/正在做的事）。\n"

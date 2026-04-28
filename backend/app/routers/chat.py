@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Iterator
+from datetime import datetime, timezone
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -112,6 +113,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
             sid: UUID = sess.id
             db.add(Message(session_id=sid, role="user", content=body.message))
+            sess.updated_at = datetime.now(timezone.utc)
             db.commit()
 
             rows = (
