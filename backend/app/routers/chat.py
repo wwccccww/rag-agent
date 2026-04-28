@@ -13,7 +13,7 @@ from app.models import Message, SessionModel
 from app.schemas import ChatStreamRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
-from app.services.rag import search_chunks, search_memories
+from app.services.rag import multi_query_search, search_memories
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -126,7 +126,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             )
             hist = list(reversed(rows))
 
-            sources = search_chunks(db, client, body.message, top_k)
+            sources = multi_query_search(db, client, body.message, top_k)
             mem_lines = search_memories(db, client, body.user_id, body.message, top_k=5)
 
             pub_sources = [

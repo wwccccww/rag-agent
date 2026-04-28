@@ -505,6 +505,28 @@ a:hover { text-decoration: underline; }
   padding: 40px 20px;
 }
 
+.ingest-tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+
+.ingest-tab {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-muted);
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+
+.ingest-tab:hover { background: var(--panel-hover); color: var(--text); }
+.ingest-tab.active { background: var(--accent-dim); border-color: var(--accent); color: var(--accent); }
+
 .ingest-layout h2 {
   font-size: 20px;
   font-weight: 700;

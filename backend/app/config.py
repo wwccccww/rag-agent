@@ -17,6 +17,8 @@ class Settings(BaseSettings):
     summary_threshold: int = 20
     # 混合检索：向量权重 vs 三元组文本权重（RRF 已自动平衡，此参数保留供将来调参）
     hybrid_search: bool = True
+    # 查询改写：对话前用 LLM 生成 2 个备选查询，多路召回合并（增加召回率，会多一次 LLM 调用）
+    query_rewrite: bool = True
 
 
 settings = Settings()

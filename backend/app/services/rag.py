@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import uuid
 from typing import Any
@@ -133,6 +134,47 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
             }
         )
     return out
+
+
+def rewrite_query(ollama: OllamaClient, query: str) -> list[str]:
+    """用 LLM 生成 2 个不同表达角度的搜索查询，用于多路召回以提升覆盖率。
+    失败时静默降级，返回原始查询列表。
+    """
+    prompt = (
+        "请将以下用户问题改写为 2 个搜索视角不同的知识库查询（简洁，不超过 30 字）。\n"
+        "只输出 JSON 数组，不要任何其他文字。\n"
+        '格式：["查询1", "查询2"]\n\n'
+        "原始问题：" + query[:400]
+    )
+    try:
+        raw = ollama.chat_complete([{"role": "user", "content": prompt}], temperature=0.2)
+        start = raw.find("[")
+        end = raw.rfind("]")
+        if start != -1 and end != -1:
+            variants: list[str] = json.loads(raw[start : end + 1])
+            valid = [v.strip() for v in variants if isinstance(v, str) and v.strip()][:2]
+            if valid:
+                logging.info("[RAG] query rewrite: %s → %s", query[:40], valid)
+                return [query] + valid
+    except Exception as e:
+        logging.warning("[RAG] query rewrite failed, using original: %s", e)
+    return [query]
+
+
+def multi_query_search(
+    db: Session, ollama: OllamaClient, query: str, top_k: int
+) -> list[dict[str, Any]]:
+    """多路召回：对原始查询 + 改写变体分别检索，按最高 RRF 分去重合并，返回 top_k 结果。"""
+    queries = rewrite_query(ollama, query) if settings.query_rewrite else [query]
+
+    merged: dict[str, dict[str, Any]] = {}  # chunk_id → best result
+    for q in queries:
+        for r in search_chunks(db, ollama, q, top_k):
+            cid = str(r["chunk_id"])
+            if cid not in merged or r["score"] > merged[cid]["score"]:
+                merged[cid] = r
+
+    return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
 
 
 def search_memories(db: Session, ollama: OllamaClient, user_id: str, query: str, top_k: int = 5) -> list[str]:
