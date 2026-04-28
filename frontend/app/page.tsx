@@ -408,6 +408,7 @@ export default function HomePage() {
             <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>
             <a href="/documents" className="btn" style={{ width: "100%", justifyContent: "center" }}>🔍 查看文档库</a>
             <a href={`/memory?user_id=${userId}`} className="btn" style={{ width: "100%", justifyContent: "center" }}>🧠 查看记忆</a>
+            <a href="/stats" className="btn" style={{ width: "100%", justifyContent: "center" }}>📊 系统统计</a>
             <button className="btn" style={{ width: "100%", justifyContent: "center" }} onClick={pingHealth} disabled={healthLoading}>
               {healthLoading ? "检查中…" : "⚡ 健康检查"}
             </button>
@@ -475,7 +476,34 @@ export default function HomePage() {
   );
 }
 
-function MarkdownContent({ content }: { content: string }) {
+function MarkdownContent({ content, sources, onCiteClick }: {
+  content: string;
+  sources?: Source[];
+  onCiteClick?: (idx: number) => void;
+}) {
+  // 把 [S1] [S2] 替换为可点击徽章（先占位，再在 text 节点里处理）
+  const renderText = (text: string) => {
+    const parts = text.split(/(\[S\d+\])/g);
+    return parts.map((part, i) => {
+      const m = part.match(/^\[S(\d+)\]$/);
+      if (m) {
+        const idx = parseInt(m[1]) - 1;
+        const src = sources?.[idx];
+        return (
+          <button
+            key={i}
+            className="cite-badge"
+            title={src ? `${src.source ?? ""}${src.page != null ? ` p.${src.page}` : ""}` : part}
+            onClick={() => onCiteClick?.(idx)}
+          >
+            {part}
+          </button>
+        );
+      }
+      return part;
+    });
+  };
+
   return (
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
@@ -499,6 +527,23 @@ function MarkdownContent({ content }: { content: string }) {
         a({ href, children }) {
           return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
         },
+        p({ children }) {
+          // 把段落里的文本节点过一遍引用解析
+          const processed = Array.isArray(children)
+            ? children.flatMap((child) =>
+                typeof child === "string" ? renderText(child) : [child]
+              )
+            : typeof children === "string" ? renderText(children) : children;
+          return <p>{processed}</p>;
+        },
+        li({ children }) {
+          const processed = Array.isArray(children)
+            ? children.flatMap((child) =>
+                typeof child === "string" ? renderText(child) : [child]
+              )
+            : typeof children === "string" ? renderText(children) : children;
+          return <li>{processed}</li>;
+        },
       }}
     >
       {content}
@@ -508,7 +553,14 @@ function MarkdownContent({ content }: { content: string }) {
 
 function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
+  const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
   const hasSources = (msg.sources?.length ?? 0) > 0;
+
+  const handleCiteClick = (idx: number) => {
+    setSourcesOpen(true);
+    setHighlightIdx(idx);
+    setTimeout(() => setHighlightIdx(null), 2000);
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -520,7 +572,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
           {sourcesOpen && (
             <div className="sources-list">
               {msg.sources!.map((s, i) => (
-                <div key={s.chunk_id} className="source-card">
+                <div key={s.chunk_id} className={`source-card${highlightIdx === i ? " highlighted" : ""}`}>
                   <div className="source-card-header">
                     <span className="source-card-file">[S{i + 1}] {s.source ?? "未知来源"}</span>
                     {s.page != null && <span className="source-card-meta">第 {s.page} 页</span>}
@@ -546,7 +598,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
           ) : (
             <div className={`msg-bubble ${msg.role}${msg.streaming ? " streaming" : ""}`}>
               {msg.role === "assistant"
-                ? <MarkdownContent content={msg.content} />
+                ? <MarkdownContent content={msg.content} sources={msg.sources} onCiteClick={handleCiteClick} />
                 : msg.content}
             </div>
           )}

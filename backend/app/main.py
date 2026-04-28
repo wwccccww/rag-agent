@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, init_db
-from app.routers import chat, docs, health, ingest, memory, sessions
+from app.routers import chat, docs, health, ingest, memory, sessions, stats
 
 logging.basicConfig(level=logging.INFO)
 
@@ -34,6 +34,7 @@ app.include_router(chat.router)
 app.include_router(memory.router)
 app.include_router(docs.router)
 app.include_router(sessions.router)
+app.include_router(stats.router)
 
 
 @app.get("/")

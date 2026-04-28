@@ -8,6 +8,7 @@ from pypdf import PdfReader
 
 def extract_text(filename: str, data: bytes) -> str:
     suffix = Path(filename).suffix.lower()
+
     if suffix == ".pdf":
         reader = PdfReader(io.BytesIO(data))
         parts: list[str] = []
@@ -16,6 +17,42 @@ def extract_text(filename: str, data: bytes) -> str:
             if t.strip():
                 parts.append(f"\n--- Page {i + 1} ---\n{t}")
         return "\n".join(parts).strip()
+
+    if suffix == ".docx":
+        try:
+            from docx import Document as DocxDocument  # lazy import
+            doc = DocxDocument(io.BytesIO(data))
+            paragraphs = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            # 同时提取表格内容
+            for table in doc.tables:
+                for row in table.rows:
+                    cells = [c.text.strip() for c in row.cells if c.text.strip()]
+                    if cells:
+                        paragraphs.append(" | ".join(cells))
+            result = "\n\n".join(paragraphs)
+            logging.info("[Extract] docx → %d chars, %d paragraphs", len(result), len(paragraphs))
+            return result
+        except ImportError as e:
+            raise RuntimeError("python-docx 未安装，请运行 pip install python-docx") from e
+
+    if suffix == ".xlsx":
+        try:
+            import openpyxl  # lazy import
+            wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+            parts: list[str] = []
+            for sheet in wb.worksheets:
+                parts.append(f"## Sheet: {sheet.title}")
+                for row in sheet.iter_rows(values_only=True):
+                    cells = [str(c) for c in row if c is not None]
+                    if cells:
+                        parts.append(" | ".join(cells))
+            result = "\n".join(parts)
+            logging.info("[Extract] xlsx → %d chars, %d sheets", len(result), len(wb.worksheets))
+            return result
+        except ImportError as e:
+            raise RuntimeError("openpyxl 未安装，请运行 pip install openpyxl") from e
+
+    # 默认按 UTF-8 文本处理（.txt / .md / .csv 等）
     return data.decode("utf-8", errors="replace")
 
 

@@ -340,6 +340,36 @@ a:hover { text-decoration: underline; }
 }
 .msg-bubble.user { white-space: pre-wrap; }
 
+/* ── 引用徽章 [S1] [S2] ── */
+.cite-badge {
+  display: inline-flex;
+  align-items: center;
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  color: var(--accent);
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 5px;
+  cursor: pointer;
+  transition: background 0.15s;
+  vertical-align: baseline;
+  line-height: 1.4;
+  margin: 0 1px;
+}
+.cite-badge:hover { background: var(--accent); color: #0d1117; }
+
+/* 源片段高亮闪烁 */
+.source-card.highlighted {
+  border-color: var(--accent) !important;
+  background: var(--accent-dim) !important;
+  animation: highlight-fade 2s ease forwards;
+}
+@keyframes highlight-fade {
+  0%   { border-color: var(--accent); background: rgba(79,158,255,0.15); }
+  100% { border-color: var(--border); background: var(--panel); }
+}
+
 .msg-bubble.user {
   background: rgba(15, 37, 69, 0.85);
   border: 1px solid var(--user-border);
@@ -607,6 +637,40 @@ a:hover { text-decoration: underline; }
 .result-block.success { background: var(--green-dim); border: 1px solid #2d5a38; color: var(--green); }
 .result-block.error { background: #2d1a1a; border: 1px solid #6e2a2a; color: var(--red); }
 .result-block.info { background: var(--accent-dim); border: 1px solid #2f5ba3; color: var(--accent); }
+
+/* ── Stats page ── */
+.stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 12px;
+}
+
+.stat-card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 12px;
+  text-align: center;
+}
+
+.stat-value {
+  font-size: 28px;
+  font-weight: 700;
+  line-height: 1;
+  margin-bottom: 6px;
+}
+
+.stat-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.stat-sub {
+  font-size: 10px;
+  color: var(--text-muted);
+  margin-top: 3px;
+}
 
 /* ── Empty state ── */
 .empty-state {

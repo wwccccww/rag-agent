@@ -81,7 +81,7 @@ export default function IngestPage() {
   };
 
   const ext = file?.name.split(".").pop()?.toLowerCase();
-  const extOk = !ext || ["txt", "md", "pdf"].includes(ext);
+  const extOk = !ext || ["txt", "md", "pdf", "docx", "xlsx"].includes(ext);
 
   return (
     <div className="ingest-layout">
@@ -115,7 +115,7 @@ export default function IngestPage() {
           onDragLeave={onDragLeave}
           onClick={() => inputRef.current?.click()}
         >
-          <input ref={inputRef} type="file" accept=".txt,.md,.pdf" onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
+          <input ref={inputRef} type="file" accept=".txt,.md,.pdf,.docx,.xlsx" onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
           <div className="drop-zone-icon">{file ? "📄" : "☁️"}</div>
           {file ? (
             <>
@@ -128,7 +128,7 @@ export default function IngestPage() {
           ) : (
             <>
               <div className="drop-zone-label">点击或拖拽文件到此处</div>
-              <div className="drop-zone-sub">.txt · .md · .pdf</div>
+              <div className="drop-zone-sub">.txt · .md · .pdf · .docx · .xlsx</div>
             </>
           )}
         </div>
