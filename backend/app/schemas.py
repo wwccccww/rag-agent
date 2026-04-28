@@ -22,6 +22,14 @@ class ChatStreamRequest(BaseModel):
     top_k: int | None = None
 
 
+class AgentChatRequest(BaseModel):
+    """Agent 模式请求，LLM 自主决策是否调用工具。"""
+    user_id: str = Field(default="demo")
+    session_id: UUID | None = None
+    message: str
+    top_k: int | None = None
+
+
 class SourceItem(BaseModel):
     chunk_id: UUID
     source: str | None

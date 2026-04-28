@@ -15,6 +15,17 @@ type Source = {
   snippet?: string;
 };
 
+type AgentStep = {
+  step: number;
+  tool: string;
+  icon: string;
+  label: string;
+  status: "calling" | "done";
+  args?: Record<string, string>;
+  result_summary?: string;
+  source_count?: number;
+};
+
 type ChatMsg = {
   id: number;
   role: "user" | "assistant";
@@ -22,6 +33,8 @@ type ChatMsg = {
   sources?: Source[];
   streaming?: boolean;
   createdAt?: string;
+  agentSteps?: AgentStep[];
+  agentMode?: boolean;
 };
 
 type Session = { id: string; label: string };
@@ -72,6 +85,7 @@ export default function HomePage() {
   const [health, setHealth] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [memToast, setMemToast] = useState<string | null>(null);
+  const [agentMode, setAgentMode] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -298,19 +312,24 @@ export default function HomePage() {
 
     const now = new Date().toISOString();
     const userMsg: ChatMsg = { id: uid(), role: "user", content: text, createdAt: now };
-    const assistantMsg: ChatMsg = { id: uid(), role: "assistant", content: "", sources: [], streaming: true, createdAt: now };
+    const assistantMsg: ChatMsg = {
+      id: uid(), role: "assistant", content: "", sources: [],
+      streaming: true, createdAt: now,
+      agentMode, agentSteps: agentMode ? [] : undefined,
+    };
     setMessages((m) => [...m, userMsg, assistantMsg]);
 
     const aId = assistantMsg.id;
     const payload: Record<string, unknown> = { user_id: userId, message: text, top_k: 8 };
     if (currentSession) payload.session_id = currentSession;
 
+    const endpoint = agentMode ? "/api/chat/agent/stream" : "/api/chat/stream";
     const controller = new AbortController();
     abortRef.current = controller;
 
     let res: Response;
     try {
-      res = await fetch("/api/chat/stream", {
+      res = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
@@ -336,6 +355,23 @@ export default function HomePage() {
 
     const capturedUserId = userId;
     await consumeSse(res, (event, data) => {
+      if (event === "agent_step" && data && typeof data === "object") {
+        const step = data as AgentStep;
+        setMessages((m) =>
+          m.map((msg) => {
+            if (msg.id !== aId) return msg;
+            const existing = msg.agentSteps ?? [];
+            const idx = existing.findIndex(
+              (s) => s.step === step.step && s.tool === step.tool
+            );
+            const updated =
+              idx >= 0
+                ? [...existing.slice(0, idx), step, ...existing.slice(idx + 1)]
+                : [...existing, step];
+            return { ...msg, agentSteps: updated };
+          })
+        );
+      }
       if (event === "sources" && data && typeof data === "object") {
         const d = data as { session_id?: string; sources?: Source[] };
         if (d.session_id) {
@@ -345,7 +381,6 @@ export default function HomePage() {
             { id: sid, label: text.slice(0, 24) + (text.length > 24 ? "…" : "") },
             capturedUserId
           );
-          // 已有会话发消息后移到顶部
           bumpSession(sid, capturedUserId);
         }
         const srcs = d.sources ?? [];
@@ -501,6 +536,13 @@ export default function HomePage() {
               ↓ 导出 MD
             </button>
           )}
+          <button
+            className={`agent-mode-toggle${agentMode ? " active" : ""}`}
+            onClick={() => setAgentMode((v) => !v)}
+            title={agentMode ? "当前：Agent 模式（LLM 自主决策工具调用）" : "当前：普通 RAG 模式，点击切换到 Agent 模式"}
+          >
+            {agentMode ? "⚡ Agent 模式" : "⚡ Agent 模式"}
+          </button>
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
         </div>
@@ -654,6 +696,32 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {msg.role === "assistant" && msg.agentMode && (msg.agentSteps?.length ?? 0) > 0 && (
+        <div className="agent-steps-panel">
+          {msg.agentSteps!.map((step, i) => (
+            <div key={i} className={`agent-step-row ${step.status}`}>
+              <span className="agent-step-icon">{step.icon}</span>
+              <span className="agent-step-label">{step.label}</span>
+              {step.args && Object.keys(step.args).length > 0 && (
+                <span className="agent-step-args">
+                  {Object.values(step.args)[0]?.toString().slice(0, 40)}
+                  {(Object.values(step.args)[0]?.toString().length ?? 0) > 40 ? "…" : ""}
+                </span>
+              )}
+              {step.status === "calling" && (
+                <span className="agent-step-spinner">···</span>
+              )}
+              {step.status === "done" && step.source_count != null && step.source_count > 0 && (
+                <span className="agent-step-count">{step.source_count} 个片段</span>
+              )}
+              {step.status === "done" && (step.source_count == null || step.source_count === 0) && step.result_summary && (
+                <span className="agent-step-result">{step.result_summary.slice(0, 50)}{step.result_summary.length > 50 ? "…" : ""}</span>
+              )}
+              <span className={`agent-step-status-dot ${step.status}`} />
+            </div>
+          ))}
+        </div>
+      )}
       {msg.role === "assistant" && hasSources && (
         <div className="sources-block">
           <button className="sources-toggle" onClick={() => setSourcesOpen((o) => !o)}>

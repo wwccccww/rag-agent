@@ -11,10 +11,11 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Message, SessionModel
-from app.schemas import ChatStreamRequest
+from app.schemas import AgentChatRequest, ChatStreamRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_memories
+from app.services.agent import run_agent
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -170,6 +171,119 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             # 摘要在 final 之后执行，不阻塞前端解锁
             _maybe_summarize(db, client, sess)
         except Exception as e:
+            yield _sse("error", {"message": str(e)})
+        finally:
+            client.close()
+            db.close()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8", headers=headers)
+
+
+@router.post("/chat/agent/stream")
+def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
+    """Agent 模式：LLM 自主决策工具调用后再流式生成最终回复。
+
+    SSE 事件序列：
+      agent_step (calling) → agent_step (done) [重复N次]
+      sources → token* → final
+    """
+    top_k = body.top_k or settings.rag_top_k
+
+    def gen() -> Iterator[str]:
+        db = SessionLocal()
+        client = OllamaClient()
+        try:
+            # ── 会话管理（与普通模式相同）──────────────────────────────
+            if body.session_id:
+                sess = db.get(SessionModel, body.session_id)
+                if not sess or sess.user_id != body.user_id:
+                    yield _sse("error", {"message": "session not found"})
+                    return
+            else:
+                sess = SessionModel(user_id=body.user_id)
+                db.add(sess)
+                db.flush()
+
+            sid: UUID = sess.id
+            db.add(Message(session_id=sid, role="user", content=body.message))
+            sess.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            # 加载近期消息历史
+            rows = (
+                db.execute(
+                    select(Message)
+                    .where(Message.session_id == sid)
+                    .order_by(Message.created_at.desc())
+                    .limit(settings.chat_history_turns * 2 + 2)
+                )
+                .scalars()
+                .all()
+            )
+            hist = [{"role": m.role, "content": m.content} for m in reversed(rows)]
+
+            # ── Agent 循环：工具决策 → 执行 ──────────────────────────
+            final_messages: list[dict] = []
+            agent_sources: list[dict] = []
+
+            for event in run_agent(
+                db=db,
+                ollama=client,
+                user_id=body.user_id,
+                message=body.message,
+                history=hist,
+                top_k=top_k,
+                session_summary=sess.summary or None,
+            ):
+                etype = event.get("type", "")
+
+                if etype == "agent_step":
+                    yield _sse("agent_step", {k: v for k, v in event.items() if k != "type"})
+
+                elif etype == "result":
+                    final_messages = event["messages"]
+                    agent_sources = event["sources"]
+
+            # ── 发送 sources 事件 ─────────────────────────────────────
+            pub_sources = [
+                {
+                    "chunk_id": str(s["chunk_id"]),
+                    "source": s.get("source"),
+                    "page": s.get("page"),
+                    "score": s.get("score"),
+                    "snippet": s.get("snippet"),
+                }
+                for s in agent_sources
+            ]
+            yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
+
+            # ── 流式生成最终回复 ─────────────────────────────────────
+            full = ""
+            for delta in client.chat_stream(final_messages, temperature=0.3):
+                full += delta
+                yield _sse("token", {"delta": delta})
+
+            db.add(Message(session_id=sid, role="assistant", content=full))
+            db.commit()
+
+            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
+
+            yield _sse(
+                "final",
+                {
+                    "session_id": str(sid),
+                    "memory_writes": [mem_written] if mem_written else [],
+                },
+            )
+
+            _maybe_summarize(db, client, sess)
+        except Exception as e:
+            logging.exception("[Agent] stream error")
             yield _sse("error", {"message": str(e)})
         finally:
             client.close()

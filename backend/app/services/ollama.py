@@ -77,6 +77,32 @@ class OllamaClient:
         _cache_set(key, emb)
         return emb
 
+    def chat_with_tools(self, messages: list[dict], tools: list[dict]) -> dict:
+        """非流式工具调用：让 LLM 决定调用哪个工具（或直接回答）。
+        返回 assistant 消息 dict，含 tool_calls 列表（可能为空）或 content 字符串。
+        """
+        t0 = time.perf_counter()
+        r = self._client.post(
+            f"{self.base}/api/chat",
+            json={
+                "model": settings.ollama_chat_model,
+                "messages": messages,
+                "tools": tools,
+                "stream": False,
+                "options": {"temperature": 0.0},  # 决策阶段用贪心解码
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data.get("message") or {}
+        elapsed = (time.perf_counter() - t0) * 1000
+        tool_calls = msg.get("tool_calls") or []
+        logging.info(
+            "[Ollama] chat_with_tools %.0fms | tools_called=%d",
+            elapsed, len(tool_calls),
+        )
+        return msg
+
     def chat_complete(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
         t0 = time.perf_counter()
         r = self._client.post(

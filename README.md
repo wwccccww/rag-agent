@@ -1,6 +1,8 @@
-# RAG Agent（流式对话 + RAG + 分层记忆）
+# RAG Agent（Tool Calling Agent + 流式对话 + RAG + 分层记忆）
 
 偏后端作品：FastAPI 提供 SSE 流式对话与文档入库；Postgres + pgvector 存向量；Ollama 本地 `qwen2.5:7b` 生成、`nomic-embed-text` 向量化；Next.js（App Router）作为 BFF 代理 SSE，便于演示。
+
+**核心亮点：Tool Calling Agent**——对话界面可切换到 Agent 模式，LLM 自主决策是否调用 `search_knowledge_base`、`recall_user_memory`、`get_current_datetime` 等工具，实现真正的 ReAct 推理循环，而非无脑检索。
 
 ## 架构
 
@@ -55,6 +57,7 @@ npm run dev
 | `GET /v1/health` | DB / pgvector / Ollama / 模型探测 |
 | `POST /v1/ingest` | 文件上传（`.txt/.md/.pdf`）、URL 抓取、纯文本入库 |
 | `POST /v1/chat/stream` | SSE 流式对话（`sources` → `token` → `final`） |
+| `POST /v1/chat/agent/stream` | **Agent 模式**：LLM 自主决策工具调用（`agent_step*` → `sources` → `token*` → `final`） |
 | `POST /v1/memory` | 手动写入长期记忆（自动向量化） |
 | `GET /v1/memory?user_id=` | 列出记忆 |
 | `DELETE /v1/memory/{id}` | 删除记忆 |
@@ -64,6 +67,41 @@ npm run dev
 | `GET /v1/stats?user_id=` | 系统统计（文档/片段/会话/消息/记忆数量） |
 
 ## 核心功能 & 测试方法
+
+---
+
+### 0. Tool Calling Agent（核心亮点）
+
+对话界面 topbar 有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
+
+```
+用户消息
+  ↓
+LLM 决策（chat_with_tools，不流式）
+  ├── 调用 search_knowledge_base  → 执行混合检索 → 结果注入上下文
+  ├── 调用 recall_user_memory     → 查询向量记忆 → 结果注入上下文
+  ├── 调用 get_current_datetime   → 获取当前时间 → 结果注入上下文
+  └── 无工具调用 → 直接回答（普通闲聊自动跳过检索）
+  ↓（最多 3 轮工具决策）
+流式生成最终回复（chat_stream）
+```
+
+前端实时展示每个工具调用步骤（图标 + 状态 + 片段数量），LLM 自主决策体现了 ReAct 推理能力。
+
+**测试步骤：**
+1. 启动前后端，确保已有文档入库
+2. 打开 http://localhost:3000，点击 topbar 右侧「⚡ Agent 模式」按钮（变为金色表示已开启）
+3. 发送知识性问题（如「RAG 的原理是什么」），观察消息气泡上方出现工具调用步骤面板
+4. 发送闲聊（如「你好」），观察 LLM 不调用任何工具，直接回答
+5. 发送「现在几点」，观察调用 get_current_datetime 工具
+
+**预期输出：**
+
+```
+🔍 搜索知识库  "RAG 的原理"  5 个片段  ●（绿点）
+🧠 查询记忆    "RAG"         未找到相关记忆  ●（绿点）
+[流式生成回答...]
+```
 
 ---
 
