@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, ensure_extensions
-from app.routers import chat, health, ingest, memory
+from app.routers import chat, docs, health, ingest, memory, sessions
 
 
 @asynccontextmanager
@@ -27,6 +27,8 @@ app.include_router(health.router)
 app.include_router(ingest.router)
 app.include_router(chat.router)
 app.include_router(memory.router)
+app.include_router(docs.router)
+app.include_router(sessions.router)
 
 
 @app.get("/")

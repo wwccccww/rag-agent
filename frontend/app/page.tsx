@@ -1,38 +1,148 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { consumeSse } from "@/lib/sse";
 
-type ChatMsg = { role: "user" | "assistant"; content: string };
-type Source = { chunk_id: string; source?: string | null; page?: number | null; score?: number; snippet?: string };
+type Source = {
+  chunk_id: string;
+  source?: string | null;
+  page?: number | null;
+  score?: number;
+  snippet?: string;
+};
+
+type ChatMsg = {
+  id: number;
+  role: "user" | "assistant";
+  content: string;
+  sources?: Source[];
+  streaming?: boolean;
+};
+
+type Session = { id: string; label: string };
+
+const SESSION_KEY = (userId: string) => `rag_sessions_${userId}`;
+
+let _uid = 0;
+const uid = () => ++_uid;
+
+function loadSessions(userId: string): Session[] {
+  try {
+    const raw = localStorage.getItem(SESSION_KEY(userId));
+    return raw ? (JSON.parse(raw) as Session[]) : [];
+  } catch {
+    return [];
+  }
+}
+
+function saveSessions(userId: string, sessions: Session[]) {
+  try {
+    localStorage.setItem(SESSION_KEY(userId), JSON.stringify(sessions.slice(0, 50)));
+  } catch {}
+}
 
 export default function HomePage() {
   const [userId, setUserId] = useState("demo");
-  const [sessionId, setSessionId] = useState<string | null>(null);
-  const [input, setInput] = useState("");
+  const [sessions, setSessions] = useState<Session[]>([]);
+  const [currentSession, setCurrentSession] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMsg[]>([]);
-  const [sources, setSources] = useState<Source[]>([]);
+  const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
-  const [health, setHealth] = useState<string>("");
+  const [histLoading, setHistLoading] = useState(false);
+  const [health, setHealth] = useState<string | null>(null);
+  const [healthLoading, setHealthLoading] = useState(false);
+  const chatEndRef = useRef<HTMLDivElement>(null);
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  const canSend = useMemo(() => input.trim().length > 0 && !busy, [input, busy]);
+  // 初始化：从 localStorage 恢复会话列表
+  useEffect(() => {
+    const stored = loadSessions(userId);
+    setSessions(stored);
+  }, [userId]);
 
-  async function pingHealth() {
-    const r = await fetch("/api/health", { cache: "no-store" });
-    const t = await r.text();
-    setHealth(`${r.status} ${t}`);
-  }
+  // 消息变化时滚到底
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
 
-  async function send() {
+  const autoResize = () => {
+    const el = textareaRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.min(el.scrollHeight, 180) + "px";
+  };
+
+  // 切换或恢复会话：从后端拉取历史消息
+  const loadSession = useCallback(async (s: Session) => {
+    setCurrentSession(s.id);
+    setMessages([]);
+    setHealth(null);
+    setHistLoading(true);
+    try {
+      const r = await fetch(`/api/sessions/${s.id}/messages`);
+      if (r.ok) {
+        const data = await r.json() as { id: string; role: string; content: string }[];
+        setMessages(
+          data.map((m) => ({
+            id: uid(),
+            role: m.role as "user" | "assistant",
+            content: m.content,
+            sources: [],
+          }))
+        );
+      }
+    } finally {
+      setHistLoading(false);
+    }
+  }, []);
+
+  const startNewSession = useCallback(() => {
+    setCurrentSession(null);
+    setMessages([]);
+    setHealth(null);
+  }, []);
+
+  const addSession = useCallback(
+    (sess: Session, currentUserId: string) => {
+      setSessions((prev) => {
+        if (prev.find((s) => s.id === sess.id)) return prev;
+        const next = [sess, ...prev];
+        saveSessions(currentUserId, next);
+        return next;
+      });
+    },
+    []
+  );
+
+  const pingHealth = async () => {
+    setHealthLoading(true);
+    try {
+      const r = await fetch("/api/health", { cache: "no-store" });
+      const t = await r.text();
+      let pretty = t;
+      try { pretty = JSON.stringify(JSON.parse(t), null, 2); } catch {}
+      setHealth(`HTTP ${r.status}\n${pretty}`);
+    } catch (e) {
+      setHealth(String(e));
+    } finally {
+      setHealthLoading(false);
+    }
+  };
+
+  const send = async () => {
     const text = input.trim();
-    if (!text) return;
+    if (!text || busy) return;
     setBusy(true);
     setInput("");
-    setSources([]);
-    setMessages((m) => [...m, { role: "user", content: text }, { role: "assistant", content: "" }]);
+    if (textareaRef.current) textareaRef.current.style.height = "auto";
 
+    const userMsg: ChatMsg = { id: uid(), role: "user", content: text };
+    const assistantMsg: ChatMsg = { id: uid(), role: "assistant", content: "", sources: [], streaming: true };
+    setMessages((m) => [...m, userMsg, assistantMsg]);
+
+    const aId = assistantMsg.id;
     const payload: Record<string, unknown> = { user_id: userId, message: text, top_k: 8 };
-    if (sessionId) payload.session_id = sessionId;
+    if (currentSession) payload.session_id = currentSession;
 
     const res = await fetch("/api/chat/stream", {
       method: "POST",
@@ -42,129 +152,195 @@ export default function HomePage() {
 
     if (!res.ok) {
       const t = await res.text();
-      setMessages((m) => {
-        const copy = [...m];
-        const last = copy[copy.length - 1];
-        if (last?.role === "assistant") last.content = `错误：${res.status}\n${t}`;
-        return copy;
-      });
+      setMessages((m) =>
+        m.map((msg) => (msg.id === aId ? { ...msg, content: `请求失败 ${res.status}: ${t}`, streaming: false } : msg))
+      );
       setBusy(false);
       return;
     }
 
+    const capturedUserId = userId;
     await consumeSse(res, (event, data) => {
       if (event === "sources" && data && typeof data === "object") {
-        const sid = (data as { session_id?: string }).session_id;
-        if (sid) setSessionId(sid);
-        const src = (data as { sources?: Source[] }).sources ?? [];
-        setSources(src);
+        const d = data as { session_id?: string; sources?: Source[] };
+        if (d.session_id) {
+          const sid = d.session_id;
+          setCurrentSession(sid);
+          addSession(
+            { id: sid, label: text.slice(0, 24) + (text.length > 24 ? "…" : "") },
+            capturedUserId
+          );
+        }
+        const srcs = d.sources ?? [];
+        setMessages((m) =>
+          m.map((msg) => (msg.id === aId ? { ...msg, sources: srcs } : msg))
+        );
       }
       if (event === "token" && data && typeof data === "object") {
         const delta = (data as { delta?: string }).delta ?? "";
         if (!delta) return;
-        setMessages((m) => {
-          const copy = [...m];
-          const last = copy[copy.length - 1];
-          if (last?.role === "assistant") last.content += delta;
-          return copy;
-        });
+        setMessages((m) =>
+          m.map((msg) => (msg.id === aId ? { ...msg, content: msg.content + delta } : msg))
+        );
       }
       if (event === "error" && data && typeof data === "object") {
-        const msg = (data as { message?: string }).message ?? "unknown error";
-        setMessages((m) => {
-          const copy = [...m];
-          const last = copy[copy.length - 1];
-          if (last?.role === "assistant" && !last.content) last.content = `错误：${msg}`;
-          else copy.push({ role: "assistant", content: `错误：${msg}` });
-          return copy;
-        });
+        const msg = (data as { message?: string }).message ?? "未知错误";
+        setMessages((m) =>
+          m.map((s) => (s.id === aId ? { ...s, content: `错误：${msg}`, streaming: false } : s))
+        );
       }
     });
 
+    setMessages((m) => m.map((msg) => (msg.id === aId ? { ...msg, streaming: false } : msg)));
     setBusy(false);
-  }
+  };
 
-  function newSession() {
-    setSessionId(null);
-    setMessages([]);
-    setSources([]);
-  }
+  const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      send();
+    }
+  };
+
+  const isEmpty = messages.length === 0;
 
   return (
-    <div className="container">
-      <div className="row" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
-        <div>
-          <h2 style={{ margin: 0 }}>RAG 流式对话</h2>
-          <p className="muted" style={{ marginTop: 8 }}>
-            后端 FastAPI + Ollama；向量库 Postgres(pgvector)；本页通过 Next.js BFF 代理 SSE。
-          </p>
+    <div className="app-shell">
+      {/* ── Sidebar ── */}
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <h1>RAG Agent</h1>
+          <p>本地知识库对话</p>
         </div>
-        <a href="/ingest">去入库</a>
-      </div>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <div className="row">
-          <div style={{ flex: 1, minWidth: 220 }}>
-            <div className="muted" style={{ marginBottom: 6 }}>
-              user_id（长期记忆维度）
-            </div>
-            <input type="text" value={userId} onChange={(e) => setUserId(e.target.value)} />
+        <div className="sidebar-body">
+          <div className="sidebar-section-label">会话</div>
+          <div
+            className={`sidebar-session ${!currentSession ? "active" : ""}`}
+            onClick={startNewSession}
+          >
+            <div className="sidebar-session-icon">+</div>
+            <span>新对话</span>
           </div>
-          <div style={{ alignSelf: "flex-end" }}>
-            <span className="pill">session: {sessionId ? sessionId.slice(0, 8) + "…" : "new"}</span>
-          </div>
-        </div>
-        <div className="row" style={{ marginTop: 10 }}>
-          <button type="button" onClick={newSession} disabled={busy}>
-            新会话
-          </button>
-          <button type="button" onClick={pingHealth} disabled={busy}>
-            健康检查
-          </button>
-        </div>
-        {health ? (
-          <pre className="muted" style={{ marginTop: 10, whiteSpace: "pre-wrap" }}>
-            {health}
-          </pre>
-        ) : null}
-      </div>
-
-      {sources.length ? (
-        <div className="card sources" style={{ marginTop: 12 }}>
-          <div className="muted">本轮检索 sources</div>
-          {sources.map((s) => (
-            <div key={s.chunk_id} className="source">
-              <div>
-                <strong>{s.source ?? "unknown"}</strong>{" "}
-                {typeof s.page === "number" ? <span className="muted">p.{s.page}</span> : null}{" "}
-                {typeof s.score === "number" ? <span className="muted">score {s.score.toFixed(3)}</span> : null}
-              </div>
-              <div className="muted" style={{ marginTop: 6 }}>
-                {s.snippet}
-              </div>
+          {sessions.map((s) => (
+            <div
+              key={s.id}
+              className={`sidebar-session ${currentSession === s.id ? "active" : ""}`}
+              onClick={() => loadSession(s)}
+            >
+              <div className="sidebar-session-icon">💬</div>
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.label}</span>
             </div>
           ))}
         </div>
-      ) : null}
 
-      <div style={{ marginTop: 12 }}>
-        {messages.map((m, idx) => (
-          <div key={idx} className={`msg ${m.role}`}>
-            <div className="muted" style={{ marginBottom: 6 }}>
-              {m.role}
-            </div>
-            <div style={{ whiteSpace: "pre-wrap" }}>{m.content}</div>
+        <div className="sidebar-footer">
+          <div className="field-label" style={{ marginBottom: 6 }}>user_id</div>
+          <input
+            className="userid-input"
+            value={userId}
+            onChange={(e) => setUserId(e.target.value)}
+          />
+          <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+            <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>
+            <a href="/documents" className="btn" style={{ width: "100%", justifyContent: "center" }}>🔍 查看文档库</a>
+            <button className="btn" style={{ width: "100%", justifyContent: "center" }} onClick={pingHealth} disabled={healthLoading}>
+              {healthLoading ? "检查中…" : "⚡ 健康检查"}
+            </button>
           </div>
-        ))}
-      </div>
+        </div>
+      </aside>
 
-      <div className="card" style={{ marginTop: 12 }}>
-        <textarea value={input} onChange={(e) => setInput(e.target.value)} placeholder="输入问题…" />
-        <div className="row" style={{ marginTop: 10 }}>
-          <button onClick={send} disabled={!canSend}>
-            发送
+      {/* ── Main ── */}
+      <div className="main">
+        <div className="topbar">
+          <span className="topbar-title">
+            {currentSession ? `会话 ${currentSession.slice(0, 8)}…` : "新对话"}
+          </span>
+          {currentSession && <span className="badge blue">pgvector</span>}
+          <span className="badge green">Ollama · qwen2.5:7b</span>
+        </div>
+
+        {health && <pre className="health-pop">{health}</pre>}
+
+        <div className="chat-area">
+          {histLoading ? (
+            <div className="empty-state">
+              <div className="empty-state-icon" style={{ fontSize: 32 }}>⏳</div>
+              <p>正在加载历史消息…</p>
+            </div>
+          ) : isEmpty ? (
+            <div className="empty-state">
+              <div className="empty-state-icon">🧠</div>
+              <h3>开始你的知识库对话</h3>
+              <p>先在左侧「文档入库」上传文档，然后在这里提问，助手会检索相关片段并给出带引用的回答。</p>
+            </div>
+          ) : (
+            messages.map((msg) => <MessageRow key={msg.id} msg={msg} />)
+          )}
+          <div ref={chatEndRef} />
+        </div>
+
+        <div className="input-bar">
+          <div className="input-wrap">
+            <textarea
+              ref={textareaRef}
+              value={input}
+              onChange={(e) => { setInput(e.target.value); autoResize(); }}
+              onKeyDown={onKeyDown}
+              placeholder="输入问题… (Enter 发送，Shift+Enter 换行)"
+              rows={1}
+            />
+            <button className="send-btn" onClick={send} disabled={!input.trim() || busy}>↑</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function MessageRow({ msg }: { msg: ChatMsg }) {
+  const [sourcesOpen, setSourcesOpen] = useState(false);
+  const hasSources = (msg.sources?.length ?? 0) > 0;
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", alignItems: msg.role === "user" ? "flex-end" : "flex-start", gap: 4 }}>
+      {msg.role === "assistant" && hasSources && (
+        <div className="sources-block">
+          <button className="sources-toggle" onClick={() => setSourcesOpen((o) => !o)}>
+            📎 {msg.sources!.length} 个知识片段 {sourcesOpen ? "▲" : "▼"}
           </button>
-          {busy ? <span className="muted">生成中…</span> : null}
+          {sourcesOpen && (
+            <div className="sources-list">
+              {msg.sources!.map((s, i) => (
+                <div key={s.chunk_id} className="source-card">
+                  <div className="source-card-header">
+                    <span className="source-card-file">[S{i + 1}] {s.source ?? "未知来源"}</span>
+                    {s.page != null && <span className="source-card-meta">第 {s.page} 页</span>}
+                    {s.score != null && <span className="source-card-meta">相似度 {(s.score * 100).toFixed(0)}%</span>}
+                  </div>
+                  {s.snippet && <div className="source-card-snippet">{s.snippet}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      <div className={`msg-row ${msg.role}`}>
+        <div className={`msg-avatar ${msg.role}`}>
+          {msg.role === "user" ? "🧑" : "🤖"}
+        </div>
+        <div>
+          {msg.role === "assistant" && msg.streaming && !msg.content ? (
+            <div className="msg-bubble assistant">
+              <div className="typing-dots"><span /><span /><span /></div>
+            </div>
+          ) : (
+            <div className={`msg-bubble ${msg.role}${msg.streaming ? " streaming" : ""}`}>
+              {msg.content}
+            </div>
+          )}
         </div>
       </div>
     </div>
