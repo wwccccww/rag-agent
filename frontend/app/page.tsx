@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
@@ -26,6 +26,8 @@ type AgentStep = {
   source_count?: number;
 };
 
+type MsgStats = { tokens: number; tok_per_sec: number };
+
 type ChatMsg = {
   id: number;
   role: "user" | "assistant";
@@ -35,6 +37,7 @@ type ChatMsg = {
   createdAt?: string;
   agentSteps?: AgentStep[];
   agentMode?: boolean;
+  stats?: MsgStats;
 };
 
 type Session = { id: string; label: string };
@@ -354,6 +357,7 @@ export default function HomePage() {
     }
 
     const capturedUserId = userId;
+    let capturedSessionId = currentSession;
     await consumeSse(res, (event, data) => {
       if (event === "agent_step" && data && typeof data === "object") {
         const step = data as AgentStep;
@@ -376,6 +380,7 @@ export default function HomePage() {
         const d = data as { session_id?: string; sources?: Source[] };
         if (d.session_id) {
           const sid = d.session_id;
+          capturedSessionId = sid;
           setCurrentSession(sid);
           addSession(
             { id: sid, label: text.slice(0, 24) + (text.length > 24 ? "…" : "") },
@@ -396,10 +401,24 @@ export default function HomePage() {
         );
       }
       if (event === "final" && data && typeof data === "object") {
-        const writes = (data as { memory_writes?: string[] }).memory_writes ?? [];
+        const d = data as { memory_writes?: string[]; session_title?: string; stats?: MsgStats };
+        const writes = d.memory_writes ?? [];
         if (writes.length > 0) {
           setMemToast(`💾 已记住：${writes[0]}`);
           setTimeout(() => setMemToast(null), 5000);
+        }
+        if (d.session_title) {
+          const title = d.session_title;
+          setSessions((prev) => {
+            const next = prev.map((s) => (s.id === capturedSessionId ? { ...s, label: title } : s));
+            saveSessions(capturedUserId, next);
+            return next;
+          });
+        }
+        if (d.stats) {
+          setMessages((m) =>
+            m.map((msg) => (msg.id === aId ? { ...msg, stats: d.stats } : msg))
+          );
         }
       }
       if (event === "error" && data && typeof data === "object") {
@@ -539,15 +558,20 @@ export default function HomePage() {
           <button
             className={`agent-mode-toggle${agentMode ? " active" : ""}`}
             onClick={() => setAgentMode((v) => !v)}
-            title={agentMode ? "当前：Agent 模式（LLM 自主决策工具调用）" : "当前：普通 RAG 模式，点击切换到 Agent 模式"}
+            title={agentMode ? "当前：Agent 模式（LLM 自主决策工具调用），点击关闭" : "当前：普通 RAG 模式，点击开启 Agent 模式"}
           >
-            {agentMode ? "⚡ Agent 模式" : "⚡ Agent 模式"}
+            {agentMode ? "⚡ Agent 开启" : "⚡ Agent 关闭"}
           </button>
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
         </div>
 
-        {health && <pre className="health-pop">{health}</pre>}
+        {health && (
+          <div className="health-pop-wrap">
+            <pre className="health-pop">{health}</pre>
+            <button className="health-pop-close" onClick={() => setHealth(null)} title="关闭">×</button>
+          </div>
+        )}
 
         <div className="chat-area">
           {histLoading ? (
@@ -674,7 +698,7 @@ function formatTime(iso?: string): string {
   }
 }
 
-function MessageRow({ msg }: { msg: ChatMsg }) {
+const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -753,8 +777,14 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
             <div className="msg-bubble assistant">
               <div className="typing-dots"><span /><span /><span /></div>
             </div>
+          ) : msg.role === "assistant" && msg.streaming ? (
+            // 流式阶段：纯文本 + 闪烁光标，避免每 token 触发 ReactMarkdown 重渲染
+            <div className="msg-bubble assistant streaming">
+              <span className="streaming-text">{msg.content}</span>
+              <span className="typing-cursor">▌</span>
+            </div>
           ) : (
-            <div className={`msg-bubble ${msg.role}${msg.streaming ? " streaming" : ""}`}>
+            <div className={`msg-bubble ${msg.role}`}>
               {msg.role === "assistant"
                 ? <MarkdownContent content={msg.content} sources={msg.sources} onCiteClick={handleCiteClick} />
                 : msg.content}
@@ -763,6 +793,11 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
           {!msg.streaming && (
             <div className="msg-meta-row">
               {timeStr && <span className="msg-time">{timeStr}</span>}
+              {msg.stats && (
+                <span className="msg-stats" title={`共 ${msg.stats.tokens} 个 token`}>
+                  {msg.stats.tok_per_sec} tok/s
+                </span>
+              )}
               {msg.role === "assistant" && msg.content && (
                 <button className="msg-copy-btn" onClick={copyContent} title="复制回答">
                   {copied ? "✓ 已复制" : "复制"}
@@ -774,4 +809,4 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
       </div>
     </div>
   );
-}
+});

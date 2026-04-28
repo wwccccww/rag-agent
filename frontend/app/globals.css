@@ -21,6 +21,7 @@
   --assistant-border: #1e2d45;
   --input-bg: #0c1422;
   --scrollbar: #1e2d45;
+  --accent-muted: rgba(79, 158, 255, 0.12);
 }
 
 *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -948,4 +949,58 @@ a:hover { text-decoration: underline; }
 }
 .agent-step-status-dot.done {
   background: #4ade80;
+}
+
+/* ── 流式光标 ── */
+.streaming-text {
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-size: inherit;
+  line-height: inherit;
+}
+.typing-cursor {
+  display: inline-block;
+  color: var(--accent);
+  animation: cursor-blink 0.8s step-end infinite;
+  font-weight: 300;
+  margin-left: 1px;
+}
+@keyframes cursor-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* ── tok/s 统计 ── */
+.msg-stats {
+  font-size: 10px;
+  color: var(--text-dim);
+  margin-left: 4px;
+  font-family: ui-monospace, Consolas, monospace;
+  cursor: default;
+}
+
+/* ── Health 弹窗关闭 ── */
+.health-pop-wrap {
+  position: relative;
+  margin: 8px 20px 0;
+}
+.health-pop-wrap .health-pop {
+  margin: 0;
+}
+.health-pop-close {
+  position: absolute;
+  top: 6px;
+  right: 8px;
+  background: none;
+  border: none;
+  color: var(--text-muted);
+  font-size: 16px;
+  cursor: pointer;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 4px;
+}
+.health-pop-close:hover {
+  color: var(--text);
+  background: var(--panel-hover);
 }

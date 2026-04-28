@@ -1,6 +1,8 @@
 import json
 import logging
+import time
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from uuid import UUID
 
@@ -72,6 +74,21 @@ def _build_system_prompt(
     )
 
 
+def _generate_title(client: OllamaClient, first_message: str) -> str:
+    """用 LLM 为新会话生成不超过 10 字的简洁标题。失败时返回截断文本。"""
+    try:
+        prompt = (
+            "请为以下用户问题生成一个不超过 10 个字的简洁会话标题（直接输出标题，不加引号和标点）：\n\n"
+            + first_message[:200]
+        )
+        title = client.chat_complete([{"role": "user", "content": prompt}], temperature=0.3)
+        title = title.strip().strip("「」『』\"'").replace("\n", "")[:20]
+        return title if title else first_message[:16]
+    except Exception as e:
+        logging.warning("[Chat] title generation failed: %s", e)
+        return first_message[:16]
+
+
 def _maybe_summarize(db: object, client: OllamaClient, sess: SessionModel) -> None:
     """当消息数超过阈值时自动压缩早期对话为摘要，每 10 条触发一次。"""
     try:
@@ -117,6 +134,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
+            is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
                 if not sess or sess.user_id != body.user_id:
@@ -144,8 +162,12 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             )
             hist = list(reversed(rows))
 
-            sources = multi_query_search(db, client, body.message, top_k)
-            mem_lines = search_memories(db, client, body.user_id, body.message, top_k=5)
+            # ── 并行执行 RAG 检索 + 记忆检索 ─────────────────────────
+            with ThreadPoolExecutor(max_workers=2) as ex:
+                fut_sources = ex.submit(multi_query_search, db, client, body.message, top_k)
+                fut_mem = ex.submit(search_memories, db, client, body.user_id, body.message, 5)
+                sources = fut_sources.result()
+                mem_lines = fut_mem.result()
 
             pub_sources = [
                 {
@@ -159,8 +181,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             ]
             yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
 
-            # ── 知识库无相关内容且无记忆时，直接返回固定文案，不调用 LLM ──
-            # 判断是否为纯创作/闲聊：检查 sources 和 mem_lines 均为空时才拦截
+            # ── 知识库无内容且无记忆时，代码层直接拦截，不调用 LLM ──
             if not sources and not mem_lines:
                 no_content_reply = "知识库中没有找到相关内容，无法回答该问题。"
                 yield _sse("token", {"delta": no_content_reply})
@@ -175,21 +196,37 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 if m.role in ("user", "assistant"):
                     ollama_messages.append({"role": m.role, "content": m.content})
 
+            # ── 流式生成，统计 tok/s ──────────────────────────────────
             full = ""
+            token_count = 0
+            t_stream_start = time.perf_counter()
             for delta in client.chat_stream(ollama_messages, temperature=0.3):
                 full += delta
+                token_count += 1
                 yield _sse("token", {"delta": delta})
+
+            elapsed = time.perf_counter() - t_stream_start
+            tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
 
             db.add(Message(session_id=sid, role="assistant", content=full))
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
 
+            # ── 新会话：生成语义标题 ──────────────────────────────────
+            session_title: str | None = None
+            if is_new_session:
+                session_title = _generate_title(client, body.message)
+                sess.summary = session_title
+                db.commit()
+
             yield _sse(
                 "final",
                 {
                     "session_id": str(sid),
                     "memory_writes": [mem_written] if mem_written else [],
+                    "stats": {"tokens": token_count, "tok_per_sec": tps},
+                    **({"session_title": session_title} if session_title else {}),
                 },
             )
 
@@ -223,7 +260,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
-            # ── 会话管理（与普通模式相同）──────────────────────────────
+            is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
                 if not sess or sess.user_id != body.user_id:
@@ -287,22 +324,37 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             ]
             yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
 
-            # ── 流式生成最终回复 ─────────────────────────────────────
+            # ── 流式生成最终回复，统计 tok/s ─────────────────────────
             full = ""
+            token_count = 0
+            t_stream_start = time.perf_counter()
             for delta in client.chat_stream(final_messages, temperature=0.3):
                 full += delta
+                token_count += 1
                 yield _sse("token", {"delta": delta})
+
+            elapsed = time.perf_counter() - t_stream_start
+            tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
 
             db.add(Message(session_id=sid, role="assistant", content=full))
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
 
+            # ── 新会话：生成语义标题 ──────────────────────────────────
+            session_title: str | None = None
+            if is_new_session:
+                session_title = _generate_title(client, body.message)
+                sess.summary = session_title
+                db.commit()
+
             yield _sse(
                 "final",
                 {
                     "session_id": str(sid),
                     "memory_writes": [mem_written] if mem_written else [],
+                    "stats": {"tokens": token_count, "tok_per_sec": tps},
+                    **({"session_title": session_title} if session_title else {}),
                 },
             )
 
