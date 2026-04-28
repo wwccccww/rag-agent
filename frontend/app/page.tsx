@@ -304,7 +304,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
   const hasSources = (msg.sources?.length ?? 0) > 0;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", alignItems: msg.role === "user" ? "flex-end" : "flex-start", gap: 4 }}>
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
       {msg.role === "assistant" && hasSources && (
         <div className="sources-block">
           <button className="sources-toggle" onClick={() => setSourcesOpen((o) => !o)}>
@@ -331,7 +331,7 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
         <div className={`msg-avatar ${msg.role}`}>
           {msg.role === "user" ? "🧑" : "🤖"}
         </div>
-        <div>
+        <div className="msg-content">
           {msg.role === "assistant" && msg.streaming && !msg.content ? (
             <div className="msg-bubble assistant">
               <div className="typing-dots"><span /><span /><span /></div>
