@@ -176,6 +176,17 @@ export default function HomePage() {
     []
   );
 
+  // 每次发消息后把当前会话移到列表顶部
+  const bumpSession = useCallback((sessionId: string, currentUserId: string) => {
+    setSessions((prev) => {
+      const idx = prev.findIndex((s) => s.id === sessionId);
+      if (idx <= 0) return prev; // 已经在最前或不存在，无需移动
+      const next = [prev[idx], ...prev.slice(0, idx), ...prev.slice(idx + 1)];
+      saveSessions(currentUserId, next);
+      return next;
+    });
+  }, []);
+
   const startRename = (s: Session, e: React.MouseEvent) => {
     e.stopPropagation();
     setEditingId(s.id);
@@ -309,6 +320,8 @@ export default function HomePage() {
             { id: sid, label: text.slice(0, 24) + (text.length > 24 ? "…" : "") },
             capturedUserId
           );
+          // 已有会话发消息后移到顶部
+          bumpSession(sid, capturedUserId);
         }
         const srcs = d.sources ?? [];
         setMessages((m) =>
