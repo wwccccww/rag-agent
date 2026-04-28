@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
+import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import { consumeSse } from "@/lib/sse";
 
 type Source = {
@@ -202,6 +206,25 @@ export default function HomePage() {
     }
   };
 
+  const exportMarkdown = () => {
+    if (messages.length === 0) return;
+    const sessionLabel = currentSession
+      ? (sessions.find((s) => s.id === currentSession)?.label ?? currentSession.slice(0, 8))
+      : "新对话";
+    const lines: string[] = [`# ${sessionLabel}`, `> 导出时间：${new Date().toLocaleString("zh-CN")}`, ""];
+    for (const msg of messages) {
+      if (msg.streaming) continue;
+      lines.push(msg.role === "user" ? `**用户**\n\n${msg.content}` : `**助手**\n\n${msg.content}`);
+      lines.push("\n---\n");
+    }
+    const blob = new Blob([lines.join("\n")], { type: "text/markdown;charset=utf-8" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `${sessionLabel.slice(0, 20)}.md`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  };
+
   const pingHealth = async () => {
     setHealthLoading(true);
     try {
@@ -376,6 +399,8 @@ export default function HomePage() {
           <div className="field-label" style={{ marginBottom: 6 }}>user_id</div>
           <input
             className="userid-input"
+            aria-label="用户 ID"
+            placeholder="demo"
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
           />
@@ -394,12 +419,19 @@ export default function HomePage() {
       <div className="main">
         <div className="topbar">
           <span className="topbar-title">
-            {currentSession ? `会话 ${currentSession.slice(0, 8)}…` : "新对话"}
+            {currentSession
+              ? (sessions.find((s) => s.id === currentSession)?.label ?? `会话 ${currentSession.slice(0, 8)}…`)
+              : "新对话"}
           </span>
           {memToast && (
-            <span className="badge green" style={{ maxWidth: 320, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            <span className="badge green" style={{ maxWidth: 260, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
               {memToast}
             </span>
+          )}
+          {messages.length > 0 && !busy && (
+            <button className="btn" title="导出为 Markdown" onClick={exportMarkdown} style={{ fontSize: 11, padding: "4px 8px" }}>
+              ↓ 导出 MD
+            </button>
           )}
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
@@ -443,6 +475,37 @@ export default function HomePage() {
   );
 }
 
+function MarkdownContent({ content }: { content: string }) {
+  return (
+    <ReactMarkdown
+      remarkPlugins={[remarkGfm]}
+      components={{
+        code({ className, children, ...props }) {
+          const match = /language-(\w+)/.exec(className ?? "");
+          const isBlock = !!match;
+          return isBlock ? (
+            <SyntaxHighlighter
+              style={oneDark}
+              language={match[1]}
+              PreTag="div"
+              customStyle={{ borderRadius: 6, fontSize: 12, margin: "6px 0" }}
+            >
+              {String(children).replace(/\n$/, "")}
+            </SyntaxHighlighter>
+          ) : (
+            <code className="md-inline-code" {...props}>{children}</code>
+          );
+        },
+        a({ href, children }) {
+          return <a href={href} target="_blank" rel="noopener noreferrer">{children}</a>;
+        },
+      }}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+}
+
 function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const hasSources = (msg.sources?.length ?? 0) > 0;
@@ -482,7 +545,9 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
             </div>
           ) : (
             <div className={`msg-bubble ${msg.role}${msg.streaming ? " streaming" : ""}`}>
-              {msg.content}
+              {msg.role === "assistant"
+                ? <MarkdownContent content={msg.content} />
+                : msg.content}
             </div>
           )}
         </div>

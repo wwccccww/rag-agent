@@ -1,11 +1,43 @@
+import hashlib
 import json
 import logging
+import threading
 import time
+from collections import OrderedDict
 from typing import Any, Iterator
 
 import httpx
 
 from app.config import settings
+
+# ── 进程级 Embedding LRU 缓存 ──────────────────────────────────
+# key = sha256(model + text)，value = embedding list
+# 容量 512 条，线程安全（SQLAlchemy 同步路由在线程池中运行）
+_EMBED_CACHE: "OrderedDict[str, list[float]]" = OrderedDict()
+_EMBED_CACHE_MAX = 512
+_EMBED_LOCK = threading.Lock()
+
+
+def _embed_cache_key(model: str, text: str) -> str:
+    return hashlib.sha256(f"{model}\x00{text}".encode()).hexdigest()
+
+
+def _cache_get(key: str) -> list[float] | None:
+    with _EMBED_LOCK:
+        if key in _EMBED_CACHE:
+            _EMBED_CACHE.move_to_end(key)
+            return _EMBED_CACHE[key]
+    return None
+
+
+def _cache_set(key: str, value: list[float]) -> None:
+    with _EMBED_LOCK:
+        if key in _EMBED_CACHE:
+            _EMBED_CACHE.move_to_end(key)
+        else:
+            if len(_EMBED_CACHE) >= _EMBED_CACHE_MAX:
+                _EMBED_CACHE.popitem(last=False)  # 淘汰最旧
+            _EMBED_CACHE[key] = value
 
 
 class OllamaClient:
@@ -22,6 +54,12 @@ class OllamaClient:
         return r.json()
 
     def embed(self, text: str) -> list[float]:
+        key = _embed_cache_key(settings.ollama_embed_model, text)
+        cached = _cache_get(key)
+        if cached is not None:
+            logging.debug("[Ollama] embed cache hit (%.0f chars)", len(text))
+            return cached
+
         t0 = time.perf_counter()
         r = self._client.post(
             f"{self.base}/api/embeddings",
@@ -34,7 +72,9 @@ class OllamaClient:
             raise RuntimeError("invalid embedding response")
         if len(emb) != settings.embed_dim:
             raise RuntimeError(f"embedding dim mismatch: got {len(emb)}, expected {settings.embed_dim}")
-        logging.debug("[Ollama] embed %.0f chars → %.0fms", len(text), (time.perf_counter() - t0) * 1000)
+        elapsed = (time.perf_counter() - t0) * 1000
+        logging.debug("[Ollama] embed %.0f chars → %.0fms", len(text), elapsed)
+        _cache_set(key, emb)
         return emb
 
     def chat_complete(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:

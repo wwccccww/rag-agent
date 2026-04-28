@@ -306,10 +306,39 @@ a:hover { text-decoration: underline; }
   border-radius: 12px;
   line-height: 1.65;
   font-size: 13.5px;
-  white-space: pre-wrap;
   word-break: break-word;
   max-width: 100%;
 }
+
+/* ── Markdown 内容样式 ── */
+.msg-bubble.assistant p  { margin: 0 0 8px; }
+.msg-bubble.assistant p:last-child { margin-bottom: 0; }
+.msg-bubble.assistant h1,.msg-bubble.assistant h2,.msg-bubble.assistant h3 {
+  font-size: 1em; font-weight: 700; margin: 10px 0 4px; color: var(--text);
+}
+.msg-bubble.assistant ul,.msg-bubble.assistant ol {
+  padding-left: 20px; margin: 4px 0 8px;
+}
+.msg-bubble.assistant li { margin: 2px 0; }
+.msg-bubble.assistant blockquote {
+  border-left: 3px solid var(--accent); padding-left: 10px;
+  color: var(--text-muted); margin: 6px 0;
+}
+.msg-bubble.assistant table {
+  border-collapse: collapse; width: 100%; margin: 8px 0; font-size: 12px;
+}
+.msg-bubble.assistant th,.msg-bubble.assistant td {
+  border: 1px solid var(--border); padding: 4px 8px; text-align: left;
+}
+.msg-bubble.assistant th { background: var(--panel); font-weight: 600; }
+.msg-bubble.assistant hr { border: none; border-top: 1px solid var(--border); margin: 8px 0; }
+.md-inline-code {
+  background: var(--panel); border: 1px solid var(--border);
+  border-radius: 4px; padding: 1px 5px; font-size: 12px;
+  font-family: "Cascadia Code", "Fira Code", "Consolas", monospace;
+  color: var(--accent);
+}
+.msg-bubble.user { white-space: pre-wrap; }
 
 .msg-bubble.user {
   background: rgba(15, 37, 69, 0.85);
