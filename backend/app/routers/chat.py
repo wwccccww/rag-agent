@@ -45,14 +45,29 @@ def _build_system_prompt(
         if session_summary else ""
     )
 
+    has_rag = bool(rag_lines)
+    has_mem = bool(memory_lines)
+
+    strict_rule = (
+        "【严格规则 — 必须遵守，不得违反】\n"
+        "你是一个只能基于所提供文档片段回答问题的助手。\n\n"
+        "规则一：如果下方【知识库片段】显示「未检索到相关内容」，或片段内容与问题无关：\n"
+        "  → 只能回答：「知识库中没有找到相关内容，无法回答该问题。」\n"
+        "  → 禁止用「不过」「但是」「我可以补充」等转折继续作答。\n"
+        "  → 禁止使用你的训练知识来回答，即使你认为自己知道答案。\n\n"
+        "规则二：如果下方【知识库片段】有明确相关的内容：\n"
+        "  → 基于片段内容回答，并标注引用（[S1]、[S2] 等）。\n\n"
+        "规则三：如果用户的请求是纯创作/闲聊（写诗、写故事、翻译、计算等），与知识库无关：\n"
+        "  → 可以正常完成，不受上述限制。\n\n"
+        "判断标准：如果用户在问一个事实性/知识性问题，就适用规则一和规则二。\n"
+    )
+
     return (
-        "你是知识库助手，拥有以下上下文：\n"
-        "1.【长期记忆】：关于用户个人身份、偏好、背景的事实，优先用于回答用户问自身情况的问题。\n"
-        "2.【知识库片段】：文档检索结果，回答知识/内容相关问题时用（见[S1][S3]）标注引用。"
-        + ("" if not session_summary else "\n3.【历史对话摘要】：本次会话前段对话摘要，提供背景脉络。")
-        + "\n若上述内容均无法回答，请明确说明，不要编造。\n\n"
-        f"【长期记忆】\n{mem_block}\n\n"
-        f"【知识库片段】\n{rag_block}"
+        strict_rule
+        + "\n---\n\n"
+        "你可用的上下文如下：\n\n"
+        f"【长期记忆】（关于用户身份/偏好，{'有内容' if has_mem else '为空'}）\n{mem_block}\n\n"
+        f"【知识库片段】（文档检索结果，{'共 ' + str(len(rag_lines)) + ' 条' if has_rag else '未检索到相关内容'}）\n{rag_block}"
         + (f"\n\n【历史对话摘要】\n{session_summary}" if session_summary else "")
     )
 
@@ -143,6 +158,16 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 for s in sources
             ]
             yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
+
+            # ── 知识库无相关内容且无记忆时，直接返回固定文案，不调用 LLM ──
+            # 判断是否为纯创作/闲聊：检查 sources 和 mem_lines 均为空时才拦截
+            if not sources and not mem_lines:
+                no_content_reply = "知识库中没有找到相关内容，无法回答该问题。"
+                yield _sse("token", {"delta": no_content_reply})
+                db.add(Message(session_id=sid, role="assistant", content=no_content_reply))
+                db.commit()
+                yield _sse("final", {"session_id": str(sid), "memory_writes": []})
+                return
 
             system_prompt = _build_system_prompt(sources, mem_lines, sess.summary or None)
             ollama_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]

@@ -89,13 +89,19 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     qemb = ollama.embed(query[:8000])
     candidate = top_k * 3  # 初步召回候选数
 
-    # ── 1. 向量检索 ──────────────────────────────────────────────
+    # ── 1. 向量检索（带相关性阈值过滤）─────────────────────────
     dist_expr = Chunk.embedding.cosine_distance(qemb)
     vec_rows = db.execute(
         select(Chunk.id, dist_expr.label("dist"))
+        .where(dist_expr < settings.vector_distance_threshold)  # 过滤掉明显不相关的片段
         .order_by(dist_expr)
         .limit(candidate)
     ).all()
+    if not vec_rows:
+        logging.info("[RAG] no chunks within distance threshold %.2f", settings.vector_distance_threshold)
+        return []
+    # 保存每个 chunk 的真实余弦相似度（用于展示，而非排序）
+    vec_similarity: dict[Any, float] = {row.id: round(1.0 - float(row.dist), 4) for row in vec_rows}
     vec_ranks: dict[Any, int] = {row.id: i + 1 for i, row in enumerate(vec_rows)}
 
     # ── 2. 三元组文本检索（pg_trgm word_similarity）────────────

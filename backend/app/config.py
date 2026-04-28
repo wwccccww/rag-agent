@@ -21,6 +21,10 @@ class Settings(BaseSettings):
     query_rewrite: bool = True
     # 上传文件大小上限（MB），防止超大文件导致内存耗尽
     max_upload_mb: int = 50
+    # 向量检索相关性阈值：余弦距离超过此值的片段视为"不相关"直接丢弃
+    # cosine_distance ∈ [0,2]，0=完全相同，1=正交，2=相反
+    # 0.5 对应余弦相似度 ≈ 0.75，经验上是"有一定相关性"的下限
+    vector_distance_threshold: float = 0.4
 
 
 settings = Settings()
