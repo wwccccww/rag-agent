@@ -21,6 +21,7 @@ type ChatMsg = {
   content: string;
   sources?: Source[];
   streaming?: boolean;
+  createdAt?: string;
 };
 
 type Session = { id: string; label: string };
@@ -78,6 +79,7 @@ export default function HomePage() {
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   // 初始化：从 localStorage 恢复会话列表，同时从服务器同步
   useEffect(() => {
@@ -143,13 +145,14 @@ export default function HomePage() {
     try {
       const r = await fetch(`/api/sessions/${s.id}/messages`);
       if (r.ok) {
-        const data = await r.json() as { id: string; role: string; content: string }[];
+        const data = await r.json() as { id: string; role: string; content: string; created_at?: string }[];
         setMessages(
           data.map((m) => ({
             id: uid(),
             role: m.role as "user" | "assistant",
             content: m.content,
             sources: [],
+            createdAt: m.created_at,
           }))
         );
       }
@@ -279,6 +282,13 @@ export default function HomePage() {
     }
   };
 
+  const stopGeneration = () => {
+    abortRef.current?.abort();
+    abortRef.current = null;
+    setMessages((m) => m.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg)));
+    setBusy(false);
+  };
+
   const send = async () => {
     const text = input.trim();
     if (!text || busy) return;
@@ -286,19 +296,34 @@ export default function HomePage() {
     setInput("");
     if (textareaRef.current) textareaRef.current.style.height = "auto";
 
-    const userMsg: ChatMsg = { id: uid(), role: "user", content: text };
-    const assistantMsg: ChatMsg = { id: uid(), role: "assistant", content: "", sources: [], streaming: true };
+    const now = new Date().toISOString();
+    const userMsg: ChatMsg = { id: uid(), role: "user", content: text, createdAt: now };
+    const assistantMsg: ChatMsg = { id: uid(), role: "assistant", content: "", sources: [], streaming: true, createdAt: now };
     setMessages((m) => [...m, userMsg, assistantMsg]);
 
     const aId = assistantMsg.id;
     const payload: Record<string, unknown> = { user_id: userId, message: text, top_k: 8 };
     if (currentSession) payload.session_id = currentSession;
 
-    const res = await fetch("/api/chat/stream", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    let res: Response;
+    try {
+      res = await fetch("/api/chat/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if ((e as Error).name === "AbortError") { setBusy(false); return; }
+      setMessages((m) =>
+        m.map((msg) => (msg.id === aId ? { ...msg, content: `网络错误：${String(e)}`, streaming: false } : msg))
+      );
+      setBusy(false);
+      return;
+    }
 
     if (!res.ok) {
       const t = await res.text();
@@ -350,6 +375,7 @@ export default function HomePage() {
       }
     });
 
+    abortRef.current = null;
     setMessages((m) => m.map((msg) => (msg.id === aId ? { ...msg, streaming: false } : msg)));
     setBusy(false);
   };
@@ -508,8 +534,12 @@ export default function HomePage() {
               onKeyDown={onKeyDown}
               placeholder="输入问题… (Enter 发送，Shift+Enter 换行)"
               rows={1}
+              disabled={busy}
             />
-            <button className="send-btn" onClick={send} disabled={!input.trim() || busy}>↑</button>
+            {busy
+              ? <button className="send-btn stop" onClick={stopGeneration} title="停止生成">■</button>
+              : <button className="send-btn" onClick={send} disabled={!input.trim()}>↑</button>
+            }
           </div>
         </div>
       </div>
@@ -592,6 +622,16 @@ function MarkdownContent({ content, sources, onCiteClick }: {
   );
 }
 
+function formatTime(iso?: string): string {
+  if (!iso) return "";
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
 function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
@@ -602,6 +642,8 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
     setHighlightIdx(idx);
     setTimeout(() => setHighlightIdx(null), 2000);
   };
+
+  const timeStr = formatTime(msg.createdAt);
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -642,6 +684,9 @@ function MessageRow({ msg }: { msg: ChatMsg }) {
                 ? <MarkdownContent content={msg.content} sources={msg.sources} onCiteClick={handleCiteClick} />
                 : msg.content}
             </div>
+          )}
+          {timeStr && !msg.streaming && (
+            <div className="msg-time">{timeStr}</div>
           )}
         </div>
       </div>

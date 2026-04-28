@@ -82,6 +82,8 @@ export default function IngestPage() {
 
   const ext = file?.name.split(".").pop()?.toLowerCase();
   const extOk = !ext || ["txt", "md", "pdf", "docx", "xlsx"].includes(ext);
+  const fileSizeMB = file ? file.size / 1024 / 1024 : 0;
+  const isLargeFile = fileSizeMB > 20;
 
   return (
     <div className="ingest-layout">
@@ -179,6 +181,12 @@ export default function IngestPage() {
           aria-label="文档标题"
         />
       </div>
+
+      {mode === "file" && isLargeFile && extOk && (
+        <div className="result-block info" style={{ marginBottom: 10 }}>
+          ⚠️ 文件较大（{fileSizeMB.toFixed(1)} MB），入库过程可能需要数分钟，请耐心等待。
+        </div>
+      )}
 
       <button
         className="btn primary"

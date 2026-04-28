@@ -101,25 +101,39 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
              + (1 / (K + trgm_ranks.get(cid, fallback)) if trgm_ranks else 0.0)
         for cid in all_ids
     }
-    top_ids = sorted(rrf, key=lambda x: rrf[x], reverse=True)[:top_k]
+    # 多取 2 倍候选，留给来源多样性过滤使用
+    prefetch_ids = sorted(rrf, key=lambda x: rrf[x], reverse=True)[: top_k * 2]
 
-    if not top_ids:
+    if not prefetch_ids:
         return []
 
     # ── 4. 拉取完整数据 ───────────────────────────────────────────
     rows = db.execute(
         select(Chunk, Document)
         .join(Document, Chunk.document_id == Document.id)
-        .where(Chunk.id.in_(top_ids))
+        .where(Chunk.id.in_(prefetch_ids))
     ).all()
     chunk_map = {ch.id: (ch, doc) for ch, doc in rows}
+
+    # ── 5. 来源多样性过滤：每个文档最多贡献 MAX_PER_DOC 个 chunk ──
+    MAX_PER_DOC = 3
+    per_doc_count: dict[str, int] = {}
+    top_ids: list[Any] = []
+    for cid in prefetch_ids:
+        if cid not in chunk_map:
+            continue
+        _, doc = chunk_map[cid]
+        dk = str(doc.id)
+        if per_doc_count.get(dk, 0) < MAX_PER_DOC:
+            per_doc_count[dk] = per_doc_count.get(dk, 0) + 1
+            top_ids.append(cid)
+        if len(top_ids) >= top_k:
+            break
 
     max_rrf = max(rrf.values()) if rrf else 1.0
 
     out: list[dict[str, Any]] = []
     for cid in top_ids:
-        if cid not in chunk_map:
-            continue
         ch, doc = chunk_map[cid]
         page = ch.meta.get("page") if isinstance(ch.meta, dict) else None
         snippet = ch.content[:400] + ("…" if len(ch.content) > 400 else "")

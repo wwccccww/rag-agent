@@ -158,7 +158,6 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
-            _maybe_summarize(db, client, sess)
 
             yield _sse(
                 "final",
@@ -167,6 +166,9 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                     "memory_writes": [mem_written] if mem_written else [],
                 },
             )
+
+            # 摘要在 final 之后执行，不阻塞前端解锁
+            _maybe_summarize(db, client, sess)
         except Exception as e:
             yield _sse("error", {"message": str(e)})
         finally:

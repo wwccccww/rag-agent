@@ -2,6 +2,10 @@
 
 import { useEffect, useState } from "react";
 
+function loadUserId(): string {
+  try { return localStorage.getItem("rag_user_id") || "demo"; } catch { return "demo"; }
+}
+
 type Stats = {
   documents: number;
   chunks: number;
@@ -24,7 +28,7 @@ function StatCard({ label, value, sub, color = "var(--accent)" }: StatCardProps)
 }
 
 export default function StatsPage() {
-  const [userId, setUserId] = useState("demo");
+  const [userId, setUserId] = useState(loadUserId);
   const [stats, setStats] = useState<Stats | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

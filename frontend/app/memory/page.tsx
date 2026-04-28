@@ -4,11 +4,15 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "next/navigation";
 import { Suspense } from "react";
 
+function loadUserId(): string {
+  try { return localStorage.getItem("rag_user_id") || "demo"; } catch { return "demo"; }
+}
+
 type MemItem = { id: string; kind: string; content: string; created_at: string };
 
 function MemoryContent() {
   const params = useSearchParams();
-  const [userId, setUserId] = useState(params.get("user_id") ?? "demo");
+  const [userId, setUserId] = useState(() => params.get("user_id") ?? loadUserId());
   const [items, setItems] = useState<MemItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [newContent, setNewContent] = useState("");
