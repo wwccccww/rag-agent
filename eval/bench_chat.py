@@ -46,10 +46,14 @@ def bench_once(
 
     t0 = time.perf_counter()
     ttft_ms: float | None = None
+    current_event: str | None = None
 
     with client.stream("POST", url, json=payload) as resp:
         resp.raise_for_status()
         for line in iter_sse_lines(resp):
+            if line.startswith("event:"):
+                current_event = line[len("event:") :].strip()
+                continue
             if line.startswith("data:"):
                 data = line[len("data:") :].strip()
             else:
@@ -62,9 +66,14 @@ def bench_once(
             except json.JSONDecodeError:
                 continue
 
-            if ttft_ms is None and obj.get("type") == "token":
+            # 兼容两种协议：
+            # 1) 标准 SSE：event: token + data: {...}
+            # 2) 直接输出 JSON 行：{"type":"token", ...}
+            event_type = current_event or str(obj.get("type") or "")
+
+            if ttft_ms is None and event_type == "token":
                 ttft_ms = (time.perf_counter() - t0) * 1000
-            if obj.get("type") in ("final", "error"):
+            if event_type in ("final", "error"):
                 break
 
     total_ms = (time.perf_counter() - t0) * 1000
