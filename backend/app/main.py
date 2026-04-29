@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, init_db
-from app.routers import chat, docs, health, ingest, memory, sessions, stats
+from app.routers import chat, docs, health, ingest, memory, metrics, sessions, stats
 
 logging.basicConfig(level=logging.INFO)
 
@@ -29,6 +29,7 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
+app.include_router(metrics.router)
 app.include_router(ingest.router)
 app.include_router(chat.router)
 app.include_router(memory.router)

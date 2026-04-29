@@ -9,6 +9,7 @@ from typing import Any, Iterator
 import httpx
 
 from app.config import settings
+from app.telemetry import telemetry
 
 # ── 进程级 Embedding LRU 缓存 ──────────────────────────────────
 # key = sha256(model + text)，value = embedding list
@@ -74,6 +75,7 @@ class OllamaClient:
             raise RuntimeError(f"embedding dim mismatch: got {len(emb)}, expected {settings.embed_dim}")
         elapsed = (time.perf_counter() - t0) * 1000
         logging.debug("[Ollama] embed %.0f chars → %.0fms", len(text), elapsed)
+        telemetry.record_embed(elapsed)
         _cache_set(key, emb)
         return emb
 
@@ -101,6 +103,7 @@ class OllamaClient:
             "[Ollama] chat_with_tools %.0fms | tools_called=%d",
             elapsed, len(tool_calls),
         )
+        telemetry.record_chat_with_tools(elapsed)
         return msg
 
     def chat_complete(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
@@ -126,11 +129,13 @@ class OllamaClient:
             "[Ollama] chat_complete %.0fms | prompt_tokens=%s eval_tokens=%s",
             elapsed, prompt_tokens, eval_tokens,
         )
+        telemetry.record_chat_complete(elapsed)
         return result
 
     def chat_stream(self, messages: list[dict[str, str]], temperature: float = 0.3) -> Iterator[str]:
         t0 = time.perf_counter()
         first_token = True
+        ttft_ms: float | None = None
         total_tokens = 0
         with self._client.stream(
             "POST",
@@ -158,12 +163,14 @@ class OllamaClient:
                         "[Ollama] stream done %.0fms | tokens=%s %.1f tok/s",
                         elapsed, eval_tokens, tps,
                     )
+                    telemetry.record_stream(ttft_ms=ttft_ms, total_ms=elapsed, tokens=int(eval_tokens))
                     break
                 m = obj.get("message") or {}
                 piece = m.get("content") or ""
                 if piece:
                     if first_token:
-                        logging.info("[Ollama] first token %.0fms", (time.perf_counter() - t0) * 1000)
+                        ttft_ms = (time.perf_counter() - t0) * 1000
+                        logging.info("[Ollama] first token %.0fms", ttft_ms)
                         first_token = False
                     total_tokens += 1
                     yield piece

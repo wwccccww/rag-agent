@@ -55,6 +55,7 @@ npm run dev
 | 端点 | 说明 |
 |------|------|
 | `GET /v1/health` | DB / pgvector / Ollama / 模型探测 |
+| `GET /v1/metrics` | 进程内性能指标快照（TTFT / p50/p95 / tok/s 等） |
 | `POST /v1/ingest` | 文件上传（`.txt/.md/.pdf`）、URL 抓取、纯文本入库 |
 | `POST /v1/chat/stream` | SSE 流式对话（`sources` → `token` → `final`） |
 | `POST /v1/chat/agent/stream` | **Agent 模式**：LLM 自主决策工具调用（`agent_step*` → `sources` → `token*` → `final`） |
@@ -207,6 +208,46 @@ INFO:root:[Ollama] chat_complete 2341ms | prompt_tokens=48 eval_tokens=32
 ```
 
 这些指标用于评估和调优本地模型性能。
+
+**补充：指标快照 API（/v1/metrics）**
+
+`GET /v1/metrics` 会返回最近一段时间（滚动窗口）的分位数指标（p50/p95/max），便于你写简历数字、做回归对比。
+
+**测试步骤：**
+1. 启动后端并进行几次对话（普通或 Agent 均可）
+2. 在浏览器打开 `http://127.0.0.1:8000/v1/metrics`，或用命令行请求：
+
+```powershell
+curl http://127.0.0.1:8000/v1/metrics
+```
+
+**预期输出：** 返回 JSON，包含 `ollama.stream.ttft_ms.p50/p95`、`ollama.stream.total_ms.p50/p95`、`tokens_per_sec_overall` 等字段。
+
+**补充：一键跑数脚本（Benchmark）**
+
+仓库提供 `eval/bench_chat.py` 用于对 SSE 对话做基准测试，输出 TTFT/总耗时的 p50/p95。
+
+**测试步骤：**
+
+```powershell
+cd d:\1study\study\python\rag-agent\backend
+.\.venv\Scripts\Activate.ps1
+cd ..
+
+# 普通对话（/v1/chat/stream）
+python eval/bench_chat.py --n 20 --api-base http://127.0.0.1:8000
+
+# Agent 模式（/v1/chat/agent/stream）
+python eval/bench_chat.py --n 20 --agent --api-base http://127.0.0.1:8000
+```
+
+**预期输出：**
+```
+[01/20] ttft=...ms total=...ms
+...
+TTFT(ms):  p50=... p95=...
+TOTAL(ms): p50=... p95=...
+```
 
 ---
 
