@@ -2,6 +2,7 @@ import hashlib
 import json
 import logging
 import uuid
+import time
 from typing import Any
 
 from sqlalchemy import func, select
@@ -11,6 +12,7 @@ from app.config import settings
 from app.models import Chunk, Document, Memory
 from app.services.ollama import OllamaClient
 from app.services.text_extract import chunk_text, extract_text
+from app.telemetry import telemetry
 
 
 def sha256_bytes(data: bytes) -> str:
@@ -91,12 +93,14 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
 
     # ── 1. 向量检索（带相关性阈值过滤）─────────────────────────
     dist_expr = Chunk.embedding.cosine_distance(qemb)
+    t_vec = time.perf_counter()
     vec_rows = db.execute(
         select(Chunk.id, dist_expr.label("dist"))
         .where(dist_expr < settings.vector_distance_threshold)  # 过滤掉明显不相关的片段
         .order_by(dist_expr)
         .limit(candidate)
     ).all()
+    telemetry.record_timing("rag.vec_db_ms", (time.perf_counter() - t_vec) * 1000)
     if not vec_rows:
         logging.info("[RAG] no chunks within distance threshold %.2f", settings.vector_distance_threshold)
         return []
@@ -111,17 +115,20 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     if settings.hybrid_search:
         try:
             wsim_expr = func.word_similarity(query, Chunk.content)
+            t_trgm = time.perf_counter()
             trgm_rows = db.execute(
                 select(Chunk.id, wsim_expr.label("wsim"))
                 .where(wsim_expr > 0.2)
                 .order_by(wsim_expr.desc())
                 .limit(candidate)
             ).all()
+            telemetry.record_timing("rag.trgm_db_ms", (time.perf_counter() - t_trgm) * 1000)
             trgm_ranks = {row.id: i + 1 for i, row in enumerate(trgm_rows)}
         except Exception as e:
             logging.warning(f"[RAG] trgm search failed, falling back to vector-only: {e}")
 
     # ── 3. RRF 融合 ───────────────────────────────────────────────
+    t_rrf = time.perf_counter()
     K = 60  # RRF 平滑系数（通常取 60）
     fallback = candidate + 1
     all_ids = set(vec_ranks) | set(trgm_ranks)
@@ -132,16 +139,19 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     }
     # 多取 2 倍候选，留给来源多样性过滤使用
     prefetch_ids = sorted(rrf, key=lambda x: rrf[x], reverse=True)[: top_k * 2]
+    telemetry.record_timing("rag.rrf_ms", (time.perf_counter() - t_rrf) * 1000)
 
     if not prefetch_ids:
         return []
 
     # ── 4. 拉取完整数据 ───────────────────────────────────────────
+    t_fetch = time.perf_counter()
     rows = db.execute(
         select(Chunk, Document)
         .join(Document, Chunk.document_id == Document.id)
         .where(Chunk.id.in_(prefetch_ids))
     ).all()
+    telemetry.record_timing("rag.fetch_ms", (time.perf_counter() - t_fetch) * 1000)
     chunk_map = {ch.id: (ch, doc) for ch, doc in rows}
 
     # ── 5. 来源多样性过滤：每个文档最多贡献 MAX_PER_DOC 个 chunk ──
@@ -189,7 +199,9 @@ def rewrite_query(ollama: OllamaClient, query: str) -> list[str]:
         "原始问题：" + query[:400]
     )
     try:
+        t0 = time.perf_counter()
         raw = ollama.chat_complete([{"role": "user", "content": prompt}], temperature=0.2)
+        telemetry.record_timing("rag.rewrite_ms", (time.perf_counter() - t0) * 1000)
         start = raw.find("[")
         end = raw.rfind("]")
         if start != -1 and end != -1:
@@ -207,15 +219,19 @@ def multi_query_search(
     db: Session, ollama: OllamaClient, query: str, top_k: int
 ) -> list[dict[str, Any]]:
     """多路召回：对原始查询 + 改写变体分别检索，按最高 RRF 分去重合并，返回 top_k 结果。"""
+    t_total = time.perf_counter()
     queries = rewrite_query(ollama, query) if settings.query_rewrite else [query]
 
     merged: dict[str, dict[str, Any]] = {}  # chunk_id → best result
     for q in queries:
+        t_q = time.perf_counter()
         for r in search_chunks(db, ollama, q, top_k):
             cid = str(r["chunk_id"])
             if cid not in merged or r["score"] > merged[cid]["score"]:
                 merged[cid] = r
+        telemetry.record_timing("rag.search_chunks_ms", (time.perf_counter() - t_q) * 1000)
 
+    telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
     return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
 
 
