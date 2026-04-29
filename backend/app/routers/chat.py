@@ -17,6 +17,7 @@ from app.schemas import AgentChatRequest, ChatStreamRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_memories
+from app.telemetry import telemetry
 from app.services.agent import run_agent
 
 router = APIRouter(prefix="/v1", tags=["chat"])
@@ -164,8 +165,22 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
             # ── 并行执行 RAG 检索 + 记忆检索 ─────────────────────────
             with ThreadPoolExecutor(max_workers=2) as ex:
-                fut_sources = ex.submit(multi_query_search, db, client, body.message, top_k)
-                fut_mem = ex.submit(search_memories, db, client, body.user_id, body.message, 5)
+                def _timed_rag():
+                    t0 = time.perf_counter()
+                    try:
+                        return multi_query_search(db, client, body.message, top_k)
+                    finally:
+                        telemetry.record_timing("rag.search_ms", (time.perf_counter() - t0) * 1000)
+
+                def _timed_mem():
+                    t0 = time.perf_counter()
+                    try:
+                        return search_memories(db, client, body.user_id, body.message, 5)
+                    finally:
+                        telemetry.record_timing("memory.search_ms", (time.perf_counter() - t0) * 1000)
+
+                fut_sources = ex.submit(_timed_rag)
+                fut_mem = ex.submit(_timed_mem)
                 sources = fut_sources.result()
                 mem_lines = fut_mem.result()
 
@@ -190,7 +205,9 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 yield _sse("final", {"session_id": str(sid), "memory_writes": []})
                 return
 
+            t_prompt = time.perf_counter()
             system_prompt = _build_system_prompt(sources, mem_lines, sess.summary or None)
+            telemetry.record_timing("prompt.build_ms", (time.perf_counter() - t_prompt) * 1000)
             ollama_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
             for m in hist:
                 if m.role in ("user", "assistant"):
@@ -294,6 +311,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             agent_sources: list[dict] = []
             steps_trace: list[dict] = []
 
+            t_agent = time.perf_counter()
             for event in run_agent(
                 db=db,
                 ollama=client,
@@ -312,6 +330,8 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                     final_messages = event["messages"]
                     agent_sources = event["sources"]
                     steps_trace = event.get("steps_trace", [])
+
+            telemetry.record_timing("agent.loop_ms", (time.perf_counter() - t_agent) * 1000)
 
             # ── 发送 sources 事件 ─────────────────────────────────────
             pub_sources = [

@@ -60,11 +60,17 @@ class Telemetry:
         self._chat_with_tools_ms = _Rolling(window)
         self._stream = _RollingStream(window)
 
+        # 额外阶段耗时（非 LLM 生成）：检索/工具/拼 prompt 等
+        self._timings: dict[str, _Rolling] = {}
+        self._tool_exec_ms: dict[str, _Rolling] = {}
+
         self._counters: dict[str, int] = {
             "embed_calls": 0,
             "chat_complete_calls": 0,
             "chat_with_tools_calls": 0,
             "stream_calls": 0,
+            "timing_samples": 0,
+            "tool_exec_samples": 0,
         }
 
     def record_embed(self, elapsed_ms: float) -> None:
@@ -87,6 +93,28 @@ class Telemetry:
             self._counters["stream_calls"] += 1
             self._stream.add(StreamSample(ttft_ms=ttft_ms, total_ms=total_ms, tokens=int(tokens)))
 
+    def record_timing(self, name: str, elapsed_ms: float) -> None:
+        """记录非 LLM 阶段耗时（按 name 聚合）。"""
+        key = str(name).strip()[:64] or "unknown"
+        with self._lock:
+            self._counters["timing_samples"] += 1
+            roll = self._timings.get(key)
+            if roll is None:
+                roll = _Rolling(self._window)
+                self._timings[key] = roll
+            roll.add(elapsed_ms)
+
+    def record_tool_exec(self, tool_name: str, elapsed_ms: float) -> None:
+        """记录 Agent 工具执行耗时（按 tool_name 聚合）。"""
+        key = str(tool_name).strip()[:64] or "unknown"
+        with self._lock:
+            self._counters["tool_exec_samples"] += 1
+            roll = self._tool_exec_ms.get(key)
+            if roll is None:
+                roll = _Rolling(self._window)
+                self._tool_exec_ms[key] = roll
+            roll.add(elapsed_ms)
+
     def snapshot(self) -> dict:
         with self._lock:
             embed = sorted(self._embed_ms.snapshot())
@@ -100,6 +128,27 @@ class Telemetry:
 
             total_s = sum(s.total_ms for s in stream) / 1000 if stream else 0.0
             tps = (sum(tokens) / total_s) if total_s > 0 else None
+
+            # 自定义阶段耗时快照
+            timings_out: dict[str, dict] = {}
+            for name, roll in self._timings.items():
+                vs = sorted(roll.snapshot())
+                timings_out[name] = {
+                    "n": len(vs),
+                    "p50": _percentile(vs, 50),
+                    "p95": _percentile(vs, 95),
+                    "max": vs[-1] if vs else None,
+                }
+
+            tool_out: dict[str, dict] = {}
+            for name, roll in self._tool_exec_ms.items():
+                vs = sorted(roll.snapshot())
+                tool_out[name] = {
+                    "n": len(vs),
+                    "p50": _percentile(vs, 50),
+                    "p95": _percentile(vs, 95),
+                    "max": vs[-1] if vs else None,
+                }
 
             return {
                 "uptime_s": round(time.time() - self._start_ts, 3),
@@ -142,6 +191,8 @@ class Telemetry:
                         "tokens_per_sec_overall": None if tps is None else round(tps, 3),
                     },
                 },
+                "stages": timings_out,
+                "agent_tools": tool_out,
             }
 
 

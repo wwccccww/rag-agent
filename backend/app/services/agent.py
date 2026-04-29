@@ -21,6 +21,7 @@ from sqlalchemy.orm import Session
 
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_memories
+from app.telemetry import telemetry
 
 # ── Web Search（多后端 + 优雅降级）──────────────────────────────────────────
 def _web_search(query: str, max_results: int = 5) -> str:
@@ -332,7 +333,10 @@ def run_agent(
                 result_text = f"工具执行出错：{e}"
                 sources = []
                 logging.warning("[Agent] tool %s failed: %s", tool_name, e)
-            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            telemetry.record_tool_exec(tool_name, elapsed_ms)
+            telemetry.record_timing("agent.tool_total_ms", elapsed_ms)
+            elapsed_ms = int(elapsed_ms)
 
             # 去重合并 sources
             for s in sources:
