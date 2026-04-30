@@ -138,25 +138,36 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     """混合检索：向量相似度（pgvector）+ 三元组文本匹配（pg_trgm），RRF 融合排序。
     若 pg_trgm 不可用则自动降级为纯向量检索。
     """
-    qemb = ollama.embed(query[:8000])
+    # Embedding 偶发长尾：这里允许 embed 失败时降级为 trgm-only
+    try:
+        qemb = ollama.embed(query[:8000])
+    except Exception as e:
+        logging.info("[RAG] embed failed, fallback to trgm-only: %s", e)
+        telemetry.record_timing("rag.embed_failed_ms", 0.0)
+        qemb = None
     candidate = top_k * 3  # 初步召回候选数
 
     # ── 1. 向量检索（带相关性阈值过滤）─────────────────────────
-    dist_expr = Chunk.embedding.cosine_distance(qemb)
-    t_vec = time.perf_counter()
-    vec_rows = db.execute(
-        select(Chunk.id, dist_expr.label("dist"))
-        .where(dist_expr < settings.vector_distance_threshold)  # 过滤掉明显不相关的片段
-        .order_by(dist_expr)
-        .limit(candidate)
-    ).all()
-    telemetry.record_timing("rag.vec_db_ms", (time.perf_counter() - t_vec) * 1000)
-    if not vec_rows:
-        logging.info("[RAG] no chunks within distance threshold %.2f", settings.vector_distance_threshold)
-        return []
-    # 保存每个 chunk 的真实余弦相似度（用于展示，而非排序）
-    vec_similarity: dict[Any, float] = {row.id: round(1.0 - float(row.dist), 4) for row in vec_rows}
-    vec_ranks: dict[Any, int] = {row.id: i + 1 for i, row in enumerate(vec_rows)}
+    vec_rows: list[Any] = []
+    vec_similarity: dict[Any, float] = {}
+    vec_ranks: dict[Any, int] = {}
+    if qemb is not None:
+        dist_expr = Chunk.embedding.cosine_distance(qemb)
+        t_vec = time.perf_counter()
+        vec_rows = db.execute(
+            select(Chunk.id, dist_expr.label("dist"))
+            .where(dist_expr < settings.vector_distance_threshold)  # 过滤掉明显不相关的片段
+            .order_by(dist_expr)
+            .limit(candidate)
+        ).all()
+        telemetry.record_timing("rag.vec_db_ms", (time.perf_counter() - t_vec) * 1000)
+        if not vec_rows and not settings.hybrid_search:
+            logging.info("[RAG] no chunks within distance threshold %.2f", settings.vector_distance_threshold)
+            return []
+        if vec_rows:
+            # 保存每个 chunk 的真实余弦相似度（用于展示，而非排序）
+            vec_similarity = {row.id: round(1.0 - float(row.dist), 4) for row in vec_rows}
+            vec_ranks = {row.id: i + 1 for i, row in enumerate(vec_rows)}
 
     # ── 2. 三元组文本检索（pg_trgm word_similarity）────────────
     # 用 word_similarity(query, text) 衡量「查询词作为子串出现在文档中的程度」
@@ -184,6 +195,8 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     K = 60  # RRF 平滑系数（通常取 60）
     fallback = candidate + 1
     all_ids = set(vec_ranks) | set(trgm_ranks)
+    if not all_ids:
+        return []
     rrf: dict[Any, float] = {
         cid: (1 / (K + vec_ranks.get(cid, fallback)))
              + (1 / (K + trgm_ranks.get(cid, fallback)) if trgm_ranks else 0.0)
@@ -353,7 +366,12 @@ def multi_query_search(
 
 
 def search_memories(db: Session, ollama: OllamaClient, user_id: str, query: str, top_k: int = 5) -> list[str]:
-    qemb = ollama.embed(query[:8000])
+    try:
+        qemb = ollama.embed(query[:8000])
+    except Exception as e:
+        logging.info("[Memory] embed failed, skip memory recall: %s", e)
+        telemetry.record_timing("memory.embed_failed_ms", 0.0)
+        return []
     dist_expr = Memory.embedding.cosine_distance(qemb)
     stmt = (
         select(Memory, dist_expr.label("dist"))

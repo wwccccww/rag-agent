@@ -74,6 +74,9 @@ class Telemetry:
             "rag_rewrite_cache_hits": 0,
             "rag_rewrite_cache_misses": 0,
             "rag_rewrite_timeouts": 0,
+            "embed_cache_hits": 0,
+            "embed_cache_misses": 0,
+            "embed_timeouts": 0,
         }
 
     def record_embed(self, elapsed_ms: float) -> None:

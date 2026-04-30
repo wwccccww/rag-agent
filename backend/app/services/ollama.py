@@ -59,13 +59,25 @@ class OllamaClient:
         cached = _cache_get(key)
         if cached is not None:
             logging.debug("[Ollama] embed cache hit (%.0f chars)", len(text))
+            telemetry.inc("embed_cache_hits")
             return cached
+        telemetry.inc("embed_cache_misses")
 
         t0 = time.perf_counter()
-        r = self._client.post(
-            f"{self.base}/api/embeddings",
-            json={"model": settings.ollama_embed_model, "prompt": text},
-        )
+        budget_ms = int(getattr(settings, "ollama_embed_budget_ms", 0) or 0)
+        timeout = (budget_ms / 1000) if budget_ms > 0 else None
+        try:
+            r = self._client.post(
+                f"{self.base}/api/embeddings",
+                json={"model": settings.ollama_embed_model, "prompt": text},
+                timeout=timeout,
+            )
+        except httpx.TimeoutException as e:
+            telemetry.inc("embed_timeouts")
+            elapsed = (time.perf_counter() - t0) * 1000
+            telemetry.record_embed(elapsed)
+            logging.info("[Ollama] embed timed out (budget=%sms, %.0f chars)", budget_ms, len(text))
+            raise RuntimeError(f"embedding timeout: {e}") from e
         r.raise_for_status()
         data = r.json()
         emb = data.get("embedding")

@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen2.5:7b"
     ollama_embed_model: str = "nomic-embed-text:latest"
     embed_dim: int = 768  # nomic-embed-text 768
+    # Embedding 调用预算（ms）。用于治理偶发长尾；超时会触发降级（如 RAG 走 trgm-only）。
+    # 设为 0 表示不启用 budget。
+    ollama_embed_budget_ms: int = 1200
     rag_top_k: int = 8
     chat_history_turns: int = 12
     chunk_max_chars: int = 800
