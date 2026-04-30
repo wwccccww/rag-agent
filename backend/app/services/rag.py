@@ -162,6 +162,7 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     # 用 word_similarity(query, text) 衡量「查询词作为子串出现在文档中的程度」
     # 适合短查询 vs 长文档，比 similarity() 更合适
     trgm_ranks: dict[Any, int] = {}
+    trgm_similarity: dict[Any, float] = {}
     if settings.hybrid_search:
         try:
             wsim_expr = func.word_similarity(query, Chunk.content)
@@ -174,6 +175,7 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
             ).all()
             telemetry.record_timing("rag.trgm_db_ms", (time.perf_counter() - t_trgm) * 1000)
             trgm_ranks = {row.id: i + 1 for i, row in enumerate(trgm_rows)}
+            trgm_similarity = {row.id: round(float(row.wsim), 4) for row in trgm_rows}
         except Exception as e:
             logging.warning(f"[RAG] trgm search failed, falling back to vector-only: {e}")
 
@@ -224,13 +226,20 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
         ch, doc = chunk_map[cid]
         page = ch.meta.get("page") if isinstance(ch.meta, dict) else None
         snippet = ch.content[:400] + ("…" if len(ch.content) > 400 else "")
+        v = vec_similarity.get(cid)
+        t = trgm_similarity.get(cid)
+        # 展示分数：优先展示向量相似度；若该片段主要由文本检索命中，则展示 word_similarity
+        display_score = v if v is not None else (t if t is not None else 0.0)
         out.append(
             {
                 "chunk_id": ch.id,
                 "source": doc.source,
                 "page": page,
-                # 显示真实余弦相似度，chunk 不在向量结果中时退回 0
-                "score": vec_similarity.get(cid, 0.0),
+                "score": display_score,
+                # 额外返回调试字段（前端当前未展示）
+                "vec_score": v,
+                "text_score": t,
+                "rrf_score": round(float(rrf.get(cid, 0.0)), 6),
                 "snippet": snippet,
                 "full_content": ch.content,
             }
@@ -308,12 +317,20 @@ def multi_query_search(
 
     if not settings.query_rewrite:
         telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
-        return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+        return sorted(
+            merged.values(),
+            key=lambda x: float(x.get("rrf_score") or x.get("score") or 0.0),
+            reverse=True,
+        )[:top_k]
 
     if settings.query_rewrite_only_on_empty and merged:
         # 有命中则直接返回（不改写）
         telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
-        return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+        return sorted(
+            merged.values(),
+            key=lambda x: float(x.get("rrf_score") or x.get("score") or 0.0),
+            reverse=True,
+        )[:top_k]
 
     queries = rewrite_query(ollama, query)
 
@@ -321,12 +338,18 @@ def multi_query_search(
         t_q = time.perf_counter()
         for r in search_chunks(db, ollama, q, top_k):
             cid = str(r["chunk_id"])
-            if cid not in merged or r["score"] > merged[cid]["score"]:
+            r_key = float(r.get("rrf_score") or r.get("score") or 0.0)
+            m_key = float(merged.get(cid, {}).get("rrf_score") or merged.get(cid, {}).get("score") or 0.0)
+            if cid not in merged or r_key > m_key:
                 merged[cid] = r
         telemetry.record_timing("rag.search_chunks_ms", (time.perf_counter() - t_q) * 1000)
 
     telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
-    return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+    return sorted(
+        merged.values(),
+        key=lambda x: float(x.get("rrf_score") or x.get("score") or 0.0),
+        reverse=True,
+    )[:top_k]
 
 
 def search_memories(db: Session, ollama: OllamaClient, user_id: str, query: str, top_k: int = 5) -> list[str]:
