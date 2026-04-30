@@ -9,6 +9,9 @@ class Settings(BaseSettings):
     ollama_chat_model: str = "qwen2.5:7b"
     ollama_embed_model: str = "nomic-embed-text:latest"
     embed_dim: int = 768  # nomic-embed-text 768
+    # 对话生成最大 token 数（Ollama: options.num_predict）。用于收敛端到端长尾。
+    # 设为 0 表示不限制（不推荐）。
+    ollama_num_predict: int = 512
     # Embedding 调用预算（ms）。用于治理偶发长尾；超时会触发降级（如 RAG 走 trgm-only）。
     # 设为 0 表示不启用 budget。
     ollama_embed_budget_ms: int = 1200

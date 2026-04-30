@@ -149,6 +149,10 @@ class OllamaClient:
         first_token = True
         ttft_ms: float | None = None
         total_tokens = 0
+        num_predict = int(getattr(settings, "ollama_num_predict", 0) or 0)
+        options: dict[str, Any] = {"temperature": temperature}
+        if num_predict > 0:
+            options["num_predict"] = num_predict
         with self._client.stream(
             "POST",
             f"{self.base}/api/chat",
@@ -156,7 +160,7 @@ class OllamaClient:
                 "model": settings.ollama_chat_model,
                 "messages": messages,
                 "stream": True,
-                "options": {"temperature": temperature},
+                "options": options,
             },
         ) as resp:
             resp.raise_for_status()
