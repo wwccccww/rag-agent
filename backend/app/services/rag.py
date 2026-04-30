@@ -4,6 +4,8 @@ import logging
 import uuid
 import time
 from typing import Any
+import threading
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -20,6 +22,54 @@ def sha256_bytes(data: bytes) -> str:
 
 
 _MIN_CHUNK_CHARS = 30  # 过短的 chunk 不含实质信息，跳过
+
+# ── Query Rewrite 缓存（进程内，TTL）────────────────────────────────────────
+_REWRITE_LOCK = threading.Lock()
+_REWRITE_CACHE: dict[str, tuple[float, list[str]]] = {}  # key -> (expires_ts, variants)
+_REWRITE_CACHE_MAX = 512
+
+
+def _rewrite_cache_key(query: str) -> str:
+    return hashlib.sha256(query.strip().encode("utf-8")).hexdigest()
+
+
+def _rewrite_cache_get(query: str) -> list[str] | None:
+    ttl = max(0, int(settings.query_rewrite_cache_ttl_s))
+    if ttl <= 0:
+        return None
+    now = time.time()
+    key = _rewrite_cache_key(query)
+    with _REWRITE_LOCK:
+        item = _REWRITE_CACHE.get(key)
+        if not item:
+            return None
+        exp, variants = item
+        if exp <= now:
+            _REWRITE_CACHE.pop(key, None)
+            return None
+        return list(variants)
+
+
+def _rewrite_cache_set(query: str, variants: list[str]) -> None:
+    ttl = max(0, int(settings.query_rewrite_cache_ttl_s))
+    if ttl <= 0:
+        return
+    now = time.time()
+    key = _rewrite_cache_key(query)
+    with _REWRITE_LOCK:
+        if len(_REWRITE_CACHE) >= _REWRITE_CACHE_MAX:
+            # 简单清理：移除一个最早过期的；找不到则 pop 任意一个
+            oldest_k: str | None = None
+            oldest_exp = float("inf")
+            for k, (exp, _v) in _REWRITE_CACHE.items():
+                if exp < oldest_exp:
+                    oldest_exp = exp
+                    oldest_k = k
+            if oldest_k is not None:
+                _REWRITE_CACHE.pop(oldest_k, None)
+            else:
+                _REWRITE_CACHE.pop(next(iter(_REWRITE_CACHE)), None)
+        _REWRITE_CACHE[key] = (now + ttl, list(variants))
 
 
 def _extract_md_title(text: str) -> str | None:
@@ -198,9 +248,34 @@ def rewrite_query(ollama: OllamaClient, query: str) -> list[str]:
         '格式：["查询1", "查询2"]\n\n'
         "原始问题：" + query[:400]
     )
+    cached = _rewrite_cache_get(query)
+    if cached:
+        telemetry.inc("rag_rewrite_cache_hits")
+        return [query] + cached
+    telemetry.inc("rag_rewrite_cache_misses")
+
+    budget_ms = int(getattr(settings, "query_rewrite_budget_ms", 0) or 0)
+
     try:
         t0 = time.perf_counter()
-        raw = ollama.chat_complete([{"role": "user", "content": prompt}], temperature=0.2)
+
+        # 用线程 + timeout 实现 budget（不阻塞主流程）
+        def _call() -> str:
+            return ollama.chat_complete([{"role": "user", "content": prompt}], temperature=0.2)
+
+        if budget_ms > 0:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_call)
+                try:
+                    raw = fut.result(timeout=budget_ms / 1000)
+                except FuturesTimeoutError:
+                    telemetry.inc("rag_rewrite_timeouts")
+                    telemetry.record_timing("rag.rewrite_ms", (time.perf_counter() - t0) * 1000)
+                    logging.info("[RAG] query rewrite timed out (%dms), fallback to original", budget_ms)
+                    return [query]
+        else:
+            raw = _call()
+
         telemetry.record_timing("rag.rewrite_ms", (time.perf_counter() - t0) * 1000)
         start = raw.find("[")
         end = raw.rfind("]")
@@ -209,6 +284,7 @@ def rewrite_query(ollama: OllamaClient, query: str) -> list[str]:
             valid = [v.strip() for v in variants if isinstance(v, str) and v.strip()][:2]
             if valid:
                 logging.info("[RAG] query rewrite: %s → %s", query[:40], valid)
+                _rewrite_cache_set(query, valid)
                 return [query] + valid
     except Exception as e:
         logging.warning("[RAG] query rewrite failed, using original: %s", e)
@@ -220,9 +296,27 @@ def multi_query_search(
 ) -> list[dict[str, Any]]:
     """多路召回：对原始查询 + 改写变体分别检索，按最高 RRF 分去重合并，返回 top_k 结果。"""
     t_total = time.perf_counter()
-    queries = rewrite_query(ollama, query) if settings.query_rewrite else [query]
+    # B: 仅在首次检索 0 命中时才触发改写（减少延迟与成本）
+    initial: list[dict[str, Any]] = []
+    t_init = time.perf_counter()
+    try:
+        initial = search_chunks(db, ollama, query, top_k)
+    finally:
+        telemetry.record_timing("rag.initial_search_ms", (time.perf_counter() - t_init) * 1000)
 
-    merged: dict[str, dict[str, Any]] = {}  # chunk_id → best result
+    merged: dict[str, dict[str, Any]] = {str(r["chunk_id"]): r for r in initial}
+
+    if not settings.query_rewrite:
+        telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
+        return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+
+    if settings.query_rewrite_only_on_empty and merged:
+        # 有命中则直接返回（不改写）
+        telemetry.record_timing("rag.multi_query_total_ms", (time.perf_counter() - t_total) * 1000)
+        return sorted(merged.values(), key=lambda x: x["score"], reverse=True)[:top_k]
+
+    queries = rewrite_query(ollama, query)
+
     for q in queries:
         t_q = time.perf_counter()
         for r in search_chunks(db, ollama, q, top_k):

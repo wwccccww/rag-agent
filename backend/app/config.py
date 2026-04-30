@@ -19,6 +19,13 @@ class Settings(BaseSettings):
     hybrid_search: bool = True
     # 查询改写：对话前用 LLM 生成 2 个备选查询，多路召回合并（增加召回率，会多一次 LLM 调用）
     query_rewrite: bool = True
+    # 查询改写的延迟预算（ms）。超过预算则放弃改写并降级为仅用原始 query 检索。
+    # 设为 0 表示不启用预算（不推荐，容易出现长尾）。
+    query_rewrite_budget_ms: int = 1200
+    # 仅在「首次检索 0 命中」时才触发改写（更稳、更省时延）。
+    query_rewrite_only_on_empty: bool = True
+    # 改写结果缓存 TTL（秒）。命中缓存可避免重复调用 LLM 改写。
+    query_rewrite_cache_ttl_s: int = 600
     # 上传文件大小上限（MB），防止超大文件导致内存耗尽
     max_upload_mb: int = 50
     # 向量检索相关性阈值：余弦距离超过此值的片段视为"不相关"直接丢弃

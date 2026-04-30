@@ -71,6 +71,9 @@ class Telemetry:
             "stream_calls": 0,
             "timing_samples": 0,
             "tool_exec_samples": 0,
+            "rag_rewrite_cache_hits": 0,
+            "rag_rewrite_cache_misses": 0,
+            "rag_rewrite_timeouts": 0,
         }
 
     def record_embed(self, elapsed_ms: float) -> None:
@@ -114,6 +117,10 @@ class Telemetry:
                 roll = _Rolling(self._window)
                 self._tool_exec_ms[key] = roll
             roll.add(elapsed_ms)
+
+    def inc(self, name: str, delta: int = 1) -> None:
+        with self._lock:
+            self._counters[name] = int(self._counters.get(name, 0)) + int(delta)
 
     def snapshot(self) -> dict:
         with self._lock:
