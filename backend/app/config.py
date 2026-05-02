@@ -17,8 +17,10 @@ class Settings(BaseSettings):
     ollama_embed_budget_ms: int = 1200
     rag_top_k: int = 8
     chat_history_turns: int = 12
-    chunk_max_chars: int = 800
-    chunk_overlap: int = 100
+    chunk_max_chars: int = 720
+    chunk_overlap: int = 90
+    # Markdown / 含 ## 标题的文本：按标题分节再切块，单块语义更纯、减轻知识库混杂时的向量漂移
+    chunk_markdown_by_heading: bool = True
     # 会话消息超过此数量时触发自动摘要（每 10 条触发一次）
     summary_threshold: int = 20
     # 混合检索：向量权重 vs 三元组文本权重（RRF 已自动平衡，此参数保留供将来调参）
@@ -36,8 +38,16 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     # 向量检索相关性阈值：余弦距离超过此值的片段视为"不相关"直接丢弃
     # cosine_distance ∈ [0,2]，0=完全相同，1=正交，2=相反
-    # 0.5 对应余弦相似度 ≈ 0.75，经验上是"有一定相关性"的下限
-    vector_distance_threshold: float = 0.4
+    # 略收紧可减轻「勉强相关」的跨文档噪声（过严会降低召回，可按库调参）
+    vector_distance_threshold: float = 0.38
+    # pg_trgm word_similarity 下限（混合检索文本路）；过低易召回页脚、无关长文
+    trgm_word_similarity_min: float = 0.26
+    # 仅由文本路命中、无向量分时，要求更高的 word_similarity，抑制弱子串匹配污染
+    rag_trgm_only_min_similarity: float = 0.32
+    # 两路都有分时：若向量相似度与 trgm 同时偏弱则丢弃（减轻 RRF 把「双弱」拼进 Top-K）
+    rag_dual_weak_filter: bool = True
+    rag_dual_weak_max_vec: float = 0.46
+    rag_dual_weak_max_trgm: float = 0.24
 
     # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
     # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）

@@ -1,5 +1,6 @@
 import io
 import logging
+import re
 from pathlib import Path
 
 import httpx
@@ -93,17 +94,48 @@ def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str]:
     return text, title
 
 
-def chunk_text(
-    text: str,
-    max_chars: int,
-    overlap: int,
-) -> list[tuple[str, dict]]:
-    text = text.strip()
-    if not text:
-        return []
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    if not paragraphs:
-        paragraphs = [text]
+_MD_HEADING = re.compile(r"^#{1,6}\s+\S")
+
+
+def _looks_like_markdown(text: str, filename: str | None) -> bool:
+    fn = (filename or "").lower()
+    if fn.endswith(".md"):
+        return True
+    t = text.lstrip()
+    if t.startswith("#"):
+        return True
+    return "\n## " in text or "\n### " in text
+
+
+def _split_oversized_paragraph(p: str, max_chars: int, overlap: int) -> list[str]:
+    """长段按句号/换行优先切，避免硬截断把语义切碎。"""
+    if len(p) <= max_chars:
+        return [p] if p.strip() else []
+    out: list[str] = []
+    start = 0
+    n = len(p)
+    while start < n:
+        end = min(start + max_chars, n)
+        if end < n:
+            window = p[max(start, end - 140) : end]
+            cut = -1
+            for sep in ("。\n", "。", "！\n", "！", "？\n", "？", ". ", ".\n", "\n\n", "\n", "；", "; "):
+                idx = window.rfind(sep)
+                if idx != -1:
+                    cut = max(start, start + (end - len(window)) + idx + len(sep))
+                    break
+            if cut > start:
+                end = cut
+        piece = p[start:end].strip()
+        if piece:
+            out.append(piece)
+        if end >= n:
+            break
+        start = max(end - overlap, start + 1)
+    return out
+
+
+def _pack_paragraphs(paragraphs: list[str], max_chars: int, overlap: int) -> list[str]:
     chunks: list[str] = []
     buf = ""
     for p in paragraphs:
@@ -115,14 +147,68 @@ def chunk_text(
             if len(p) <= max_chars:
                 buf = p
             else:
-                for i in range(0, len(p), max_chars - overlap):
-                    chunks.append(p[i : i + max_chars])
+                for piece in _split_oversized_paragraph(p, max_chars, overlap):
+                    chunks.append(piece)
                 buf = ""
         while len(buf) > max_chars:
             chunks.append(buf[:max_chars])
             buf = buf[max_chars - overlap :]
     if buf:
         chunks.append(buf)
+    return [c.strip() for c in chunks if c.strip()]
+
+
+def _markdown_sections(text: str) -> list[str]:
+    """按 Markdown 标题行分节，每节保留标题行在段首，便于向量携带主题。"""
+    text = text.replace("\r\n", "\n").strip()
+    if not text:
+        return []
+    lines = text.split("\n")
+    sections: list[str] = []
+    buf: list[str] = []
+    for line in lines:
+        if _MD_HEADING.match(line.strip()) and buf:
+            sec = "\n".join(buf).strip()
+            if sec:
+                sections.append(sec)
+            buf = [line]
+        else:
+            buf.append(line)
+    if buf:
+        sec = "\n".join(buf).strip()
+        if sec:
+            sections.append(sec)
+    return sections if sections else [text]
+
+
+def chunk_text(
+    text: str,
+    max_chars: int,
+    overlap: int,
+    *,
+    filename: str | None = None,
+    markdown_by_heading: bool = True,
+) -> list[tuple[str, dict]]:
+    """
+    将全文切块。Markdown（.md 或含 ## 标题）在 markdown_by_heading 为 True 时先按标题分节，
+    再在节内按空行段落合并，长段按句号优先切分。
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    if markdown_by_heading and _looks_like_markdown(text, filename):
+        raw_sections = _markdown_sections(text)
+    else:
+        raw_sections = [text]
+
+    chunks: list[str] = []
+    for sec in raw_sections:
+        paragraphs = [p.strip() for p in sec.split("\n\n") if p.strip()]
+        if not paragraphs:
+            paragraphs = [sec] if sec.strip() else []
+        chunks.extend(_pack_paragraphs(paragraphs, max_chars, overlap))
+
     out: list[tuple[str, dict]] = []
     for idx, c in enumerate(chunks):
         page = None
@@ -134,5 +220,14 @@ def chunk_text(
                     page = int(num)
             except (ValueError, IndexError):
                 page = None
-        out.append((c.strip(), {"chunk_index": idx, "page": page}))
+        heading = None
+        for ln in c.split("\n")[:3]:
+            s = ln.strip()
+            if _MD_HEADING.match(s):
+                heading = s.lstrip("#").strip()[:120]
+                break
+        meta: dict = {"chunk_index": idx, "page": page}
+        if heading:
+            meta["section_heading"] = heading
+        out.append((c.strip(), meta))
     return out

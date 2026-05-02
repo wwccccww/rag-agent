@@ -23,6 +23,25 @@ def sha256_bytes(data: bytes) -> str:
 
 _MIN_CHUNK_CHARS = 30  # 过短的 chunk 不含实质信息，跳过
 
+
+def _prefetch_passes_relevance_gate(
+    cid: Any,
+    vec_similarity: dict[Any, float],
+    trgm_similarity: dict[Any, float],
+) -> bool:
+    """双路分数都偏弱时丢弃；仅文本路命中时要求更高的 word_similarity。"""
+    if not settings.rag_dual_weak_filter:
+        return True
+    vs = vec_similarity.get(cid)
+    ts = trgm_similarity.get(cid)
+    if vs is not None and ts is not None:
+        if vs < settings.rag_dual_weak_max_vec and ts < settings.rag_dual_weak_max_trgm:
+            return False
+    if vs is None and ts is not None:
+        if ts < settings.rag_trgm_only_min_similarity:
+            return False
+    return True
+
 # ── Query Rewrite 缓存（进程内，TTL）────────────────────────────────────────
 _REWRITE_LOCK = threading.Lock()
 _REWRITE_CACHE: dict[str, tuple[float, list[str]]] = {}  # key -> (expires_ts, variants)
@@ -110,7 +129,13 @@ def ingest_bytes(
     db.add(doc)
     db.flush()
 
-    pairs = chunk_text(text, settings.chunk_max_chars, settings.chunk_overlap)
+    pairs = chunk_text(
+        text,
+        settings.chunk_max_chars,
+        settings.chunk_overlap,
+        filename=filename,
+        markdown_by_heading=settings.chunk_markdown_by_heading,
+    )
     # 过滤无实质内容的短片段
     pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
     if not pairs:
@@ -177,10 +202,11 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     if settings.hybrid_search:
         try:
             wsim_expr = func.word_similarity(query, Chunk.content)
+            trgm_min = float(settings.trgm_word_similarity_min)
             t_trgm = time.perf_counter()
             trgm_rows = db.execute(
                 select(Chunk.id, wsim_expr.label("wsim"))
-                .where(wsim_expr > 0.2)
+                .where(wsim_expr > trgm_min)
                 .order_by(wsim_expr.desc())
                 .limit(candidate)
             ).all()
@@ -202,8 +228,26 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
              + (1 / (K + trgm_ranks.get(cid, fallback)) if trgm_ranks else 0.0)
         for cid in all_ids
     }
-    # 多取 2 倍候选，留给来源多样性过滤使用
-    prefetch_ids = sorted(rrf, key=lambda x: rrf[x], reverse=True)[: top_k * 2]
+    ordered_rrf = sorted(rrf, key=lambda x: rrf[x], reverse=True)
+    prefetch_ids = [
+        cid
+        for cid in ordered_rrf
+        if _prefetch_passes_relevance_gate(cid, vec_similarity, trgm_similarity)
+    ][: top_k * 2]
+    if len(prefetch_ids) < top_k:
+        before = len(prefetch_ids)
+        for cid in ordered_rrf:
+            if cid not in prefetch_ids:
+                prefetch_ids.append(cid)
+            if len(prefetch_ids) >= top_k * 2:
+                break
+        if len(prefetch_ids) > before:
+            logging.info(
+                "[RAG] relevance gate kept %d ids; padded to %d (top_k=%d)",
+                before,
+                len(prefetch_ids),
+                top_k,
+            )
     telemetry.record_timing("rag.rrf_ms", (time.perf_counter() - t_rrf) * 1000)
 
     if not prefetch_ids:
