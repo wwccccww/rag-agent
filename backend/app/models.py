@@ -17,6 +17,8 @@ class Document(Base):
     title: Mapped[str | None] = mapped_column(String(512), nullable=True)
     source: Mapped[str | None] = mapped_column(String(1024), nullable=True)
     content_sha256: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    kb_collection: Mapped[str] = mapped_column(String(64), nullable=False, default="default")
+    doc_type: Mapped[str] = mapped_column(String(32), nullable=False, default="general")
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     chunks: Mapped[list["Chunk"]] = relationship(back_populates="document", cascade="all, delete-orphan")

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 type Mode = "file" | "url" | "text";
 type FileStatus = "pending" | "uploading" | "success" | "dup" | "error";
@@ -9,6 +9,15 @@ type SingleResult = { type: "success" | "error" | "info"; text: string };
 
 const ALLOWED_EXTS = ["txt", "md", "pdf", "docx", "xlsx"];
 const MAX_MB = 50;
+const KB_COLLECTION_KEY = "rag_kb_collection";
+
+function loadKbCollection(): string {
+  try {
+    return localStorage.getItem(KB_COLLECTION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
 
 function getExt(name: string) { return name.split(".").pop()?.toLowerCase() ?? ""; }
 function isExtOk(name: string) { return ALLOWED_EXTS.includes(getExt(name)); }
@@ -35,7 +44,13 @@ export default function IngestPage() {
   const [loading, setLoading] = useState(false);
   const [singleResult, setSingleResult] = useState<SingleResult | null>(null);
   const [over, setOver] = useState(false);
+  const [kbCollection, setKbCollection] = useState("");
+  const [docType, setDocType] = useState("general");
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    setKbCollection(loadKbCollection());
+  }, []);
 
   const addFiles = useCallback((newFiles: FileList | File[]) => {
     const arr = Array.from(newFiles);
@@ -85,6 +100,8 @@ export default function IngestPage() {
         const fd = new FormData();
         fd.append("file", entry.file);
         if (title.trim()) fd.append("title", title.trim());
+        if (kbCollection.trim()) fd.append("kb_collection", kbCollection.trim());
+        fd.append("doc_type", docType);
         const r = await fetch("/api/ingest", { method: "POST", body: fd });
         const txt = await r.text();
         if (r.ok) {
@@ -112,6 +129,8 @@ export default function IngestPage() {
     if (mode === "url") fd.append("url", urlInput.trim());
     else fd.append("text", pasteText.trim());
     if (title.trim()) fd.append("title", title.trim());
+    if (kbCollection.trim()) fd.append("kb_collection", kbCollection.trim());
+    fd.append("doc_type", docType);
     try {
       const r = await fetch("/api/ingest", { method: "POST", body: fd });
       const txt = await r.text();
@@ -148,6 +167,38 @@ export default function IngestPage() {
       <p className="field-label" style={{ marginBottom: 12 }}>
         分块 → <strong>nomic-embed-text</strong> 向量化 → 写入 Postgres(pgvector)。
       </p>
+      <div style={{ marginBottom: 14, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div>
+          <div className="field-label">kb_collection（与对话页共用 localStorage）</div>
+          <input
+            className="text-input"
+            value={kbCollection}
+            onChange={(e) => {
+              const v = e.target.value;
+              setKbCollection(v);
+              try {
+                localStorage.setItem(KB_COLLECTION_KEY, v);
+              } catch {}
+            }}
+            placeholder="留空则 default"
+            aria-label="知识库分区"
+          />
+        </div>
+        <div>
+          <div className="field-label">doc_type</div>
+          <select
+            className="text-input"
+            value={docType}
+            onChange={(e) => setDocType(e.target.value)}
+            aria-label="文档类型"
+          >
+            <option value="general">general（其他）</option>
+            <option value="tutorial">tutorial（教程）</option>
+            <option value="api">api（接口说明）</option>
+            <option value="requirements">requirements（需求）</option>
+          </select>
+        </div>
+      </div>
 
       {/* 模式切换 */}
       <div className="ingest-tabs">

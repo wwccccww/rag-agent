@@ -14,6 +14,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "backend"))
 
 from app.database import SessionLocal
+from app.kb import sanitize_doc_types_list
 from app.services.rag import search_chunks
 from app.services.ollama import OllamaClient
 from app.config import settings
@@ -27,7 +28,14 @@ def run_search(query: str, top_k: int = 5, hybrid: bool = True):
         # 临时切换混合检索开关
         original = settings.hybrid_search
         settings.hybrid_search = hybrid
-        results = search_chunks(db, client, query, top_k)
+        kb = (os.environ.get("EVAL_KB_COLLECTION") or "").strip() or None
+        dt_raw = os.environ.get("EVAL_DOC_TYPES") or ""
+        doc_types = (
+            sanitize_doc_types_list([x.strip() for x in dt_raw.split(",") if x.strip()])
+            if dt_raw.strip()
+            else None
+        )
+        results = search_chunks(db, client, query, top_k, kb, doc_types)
         settings.hybrid_search = original
         return results
     finally:

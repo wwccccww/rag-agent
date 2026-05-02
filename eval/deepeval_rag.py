@@ -61,6 +61,7 @@ from deepeval.test_case import LLMTestCase  # noqa: E402
 
 from app.config import settings  # noqa: E402
 from app.database import SessionLocal, init_db  # noqa: E402
+from app.kb import sanitize_doc_types_list  # noqa: E402
 from app.services.ollama import OllamaClient  # noqa: E402
 from app.services.rag import multi_query_search  # noqa: E402
 
@@ -156,6 +157,8 @@ def run(
     judge_chunk_chars: int,
     quiet: bool,
     include_reason: bool,
+    kb_collection: str | None,
+    doc_types: list[str] | None,
 ) -> None:
     path = Path(cases_path)
     if not path.is_file():
@@ -185,7 +188,7 @@ def run(
         for case in cases:
             q = case["question"]
             case_id = case.get("id", "?")
-            sources = multi_query_search(db, ollama, q, top_k)
+            sources = multi_query_search(db, ollama, q, top_k, kb_collection, doc_types)
             answer = get_rag_answer(ollama, q, sources)
             retrieval = [r.get("full_content", r.get("snippet", "")) for r in sources if r]
             if not retrieval:
@@ -212,7 +215,8 @@ def run(
 
     print(
         f"\n[INFO] DeepEval 逐条评测：{len(work_items)} 条 | top_k={top_k} | threshold={threshold}"
-        f" | judge_chunk_chars={judge_chunk_chars}\n"
+        f" | judge_chunk_chars={judge_chunk_chars}"
+        f" | kb_collection={kb_collection or '(默认)'} | doc_types={doc_types or '(不过滤)'}\n"
         f"   评判模型: {os.getenv('DEEPEVAL_JUDGE_MODEL', '') or settings.ollama_chat_model}"
     )
     if abstain_ids:
@@ -282,7 +286,20 @@ if __name__ == "__main__":
         action="store_true",
         help="评委不生成 reason，略快",
     )
+    parser.add_argument("--kb-collection", default=None, help="知识库分区；或 EVAL_KB_COLLECTION")
+    parser.add_argument(
+        "--doc-types",
+        default=None,
+        help="逗号分隔类型 tutorial,api,...；或 EVAL_DOC_TYPES",
+    )
     args = parser.parse_args()
+    kb = (args.kb_collection or os.environ.get("EVAL_KB_COLLECTION") or "").strip() or None
+    dt_raw = args.doc_types or os.environ.get("EVAL_DOC_TYPES") or ""
+    doc_types = (
+        sanitize_doc_types_list([x.strip() for x in dt_raw.split(",") if x.strip()])
+        if dt_raw.strip()
+        else None
+    )
     run(
         cases_path=args.cases,
         top_k=args.top_k,
@@ -291,4 +308,6 @@ if __name__ == "__main__":
         judge_chunk_chars=args.judge_chunk_chars,
         quiet=args.quiet,
         include_reason=not args.no_reason,
+        kb_collection=kb,
+        doc_types=doc_types,
     )

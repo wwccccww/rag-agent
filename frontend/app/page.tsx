@@ -46,6 +46,21 @@ type Session = { id: string; label: string };
 
 const SESSION_KEY = (userId: string) => `rag_sessions_${userId}`;
 const USER_ID_KEY = "rag_user_id";
+const KB_COLLECTION_KEY = "rag_kb_collection";
+
+function loadKbCollection(): string {
+  try {
+    return localStorage.getItem(KB_COLLECTION_KEY) ?? "";
+  } catch {
+    return "";
+  }
+}
+
+function saveKbCollection(v: string) {
+  try {
+    localStorage.setItem(KB_COLLECTION_KEY, v);
+  } catch {}
+}
 
 let _uid = 0;
 const uid = () => ++_uid;
@@ -95,6 +110,10 @@ export default function HomePage() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [kbCollection, setKbCollection] = useState(loadKbCollection);
+  const [ftTutorial, setFtTutorial] = useState(false);
+  const [ftApi, setFtApi] = useState(false);
+  const [ftReq, setFtReq] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -333,6 +352,12 @@ export default function HomePage() {
     const aId = assistantMsg.id;
     const payload: Record<string, unknown> = { user_id: userId, message: text, top_k: 8 };
     if (currentSession) payload.session_id = currentSession;
+    if (kbCollection.trim()) payload.kb_collection = kbCollection.trim();
+    const dts: string[] = [];
+    if (ftTutorial) dts.push("tutorial");
+    if (ftApi) dts.push("api");
+    if (ftReq) dts.push("requirements");
+    if (dts.length > 0) payload.doc_types = dts;
 
     const endpoint = agentMode ? "/api/chat/agent/stream" : "/api/chat/stream";
     const controller = new AbortController();
@@ -533,6 +558,23 @@ export default function HomePage() {
             value={userId}
             onChange={(e) => { setUserId(e.target.value); saveUserId(e.target.value); }}
           />
+          <div className="field-label" style={{ marginBottom: 6, marginTop: 10 }}>kb_collection</div>
+          <input
+            className="userid-input"
+            aria-label="知识库分区"
+            placeholder="留空则用服务端 DEFAULT_KB_COLLECTION"
+            value={kbCollection}
+            onChange={(e) => {
+              setKbCollection(e.target.value);
+              saveKbCollection(e.target.value);
+            }}
+          />
+          <div className="field-label" style={{ marginBottom: 4, marginTop: 10 }}>检索文档类型（可多选，不选则不过滤）</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
+            <label><input type="checkbox" checked={ftTutorial} onChange={(e) => setFtTutorial(e.target.checked)} /> tutorial</label>
+            <label><input type="checkbox" checked={ftApi} onChange={(e) => setFtApi(e.target.checked)} /> api</label>
+            <label><input type="checkbox" checked={ftReq} onChange={(e) => setFtReq(e.target.checked)} /> requirements</label>
+          </div>
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
             <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>
             <a href="/documents" className="btn" style={{ width: "100%", justifyContent: "center" }}>🔍 查看文档库</a>

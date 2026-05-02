@@ -168,7 +168,14 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 def _timed_rag():
                     t0 = time.perf_counter()
                     try:
-                        return multi_query_search(db, client, body.message, top_k)
+                        return multi_query_search(
+                            db,
+                            client,
+                            body.message,
+                            top_k,
+                            body.kb_collection,
+                            list(body.doc_types) if body.doc_types else None,
+                        )
                     finally:
                         telemetry.record_timing("rag.search_ms", (time.perf_counter() - t0) * 1000)
 
@@ -320,6 +327,8 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 history=hist,
                 top_k=top_k,
                 session_summary=sess.summary or None,
+                kb_collection=body.kb_collection,
+                doc_types=list(body.doc_types) if body.doc_types else None,
             ):
                 etype = event.get("type", "")
 

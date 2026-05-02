@@ -6,6 +6,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.schemas import IngestResponse
 from app.services.ollama import OllamaClient
+from app.kb import normalize_doc_type, resolve_kb_collection
 from app.services.rag import ingest_bytes
 from app.services.text_extract import fetch_url
 
@@ -19,6 +20,8 @@ async def ingest(
     url: str | None = Form(None),
     title: str | None = Form(None),
     source: str | None = Form(None),
+    kb_collection: str | None = Form(None),
+    doc_type: str | None = Form(None),
 ) -> IngestResponse:
     db = SessionLocal()
     client = OllamaClient()
@@ -54,7 +57,15 @@ async def ingest(
         else:
             raise HTTPException(400, "请提供 file、url 或 text 其中之一")
 
-        doc_id, n = ingest_bytes(db, client, filename, data, ingest_title, ingest_source)
+        try:
+            coll = resolve_kb_collection(kb_collection)
+            dtype = normalize_doc_type(doc_type)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+
+        doc_id, n = ingest_bytes(
+            db, client, filename, data, ingest_title, ingest_source, kb_collection=coll, doc_type=dtype
+        )
         return IngestResponse(document_id=UUID(str(doc_id)), chunks_created=n)
     except HTTPException:
         raise

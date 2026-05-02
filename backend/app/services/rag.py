@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
+from app.kb import normalize_doc_type, resolve_kb_collection, sanitize_doc_types_list
 from app.models import Chunk, Document, Memory
 from app.services.ollama import OllamaClient
 from app.services.text_extract import chunk_text, extract_text
@@ -107,17 +108,27 @@ def ingest_bytes(
     data: bytes,
     title: str | None,
     source: str | None,
+    kb_collection: str | None = None,
+    doc_type: str | None = None,
 ) -> tuple[uuid.UUID, int]:
     text = extract_text(filename, data)
     if not text.strip():
         raise ValueError("empty document text")
+
+    coll = resolve_kb_collection(kb_collection)
+    dtype = normalize_doc_type(doc_type)
 
     # Markdown 文件：若未提供 title，从 H1 标题自动提取
     if title is None and filename.lower().endswith(".md"):
         title = _extract_md_title(text)
 
     h = sha256_bytes(data)
-    existing = db.execute(select(Document).where(Document.content_sha256 == h)).scalar_one_or_none()
+    existing = db.execute(
+        select(Document).where(
+            Document.content_sha256 == h,
+            Document.kb_collection == coll,
+        )
+    ).scalar_one_or_none()
     if existing:
         return existing.id, 0
 
@@ -125,6 +136,8 @@ def ingest_bytes(
         title=title or filename,
         source=source or filename,
         content_sha256=h,
+        kb_collection=coll,
+        doc_type=dtype,
     )
     db.add(doc)
     db.flush()
@@ -145,11 +158,14 @@ def ingest_bytes(
     n = 0
     for content, meta in pairs:
         emb = ollama.embed(content[:8000])
+        meta_out = dict(meta) if isinstance(meta, dict) else {}
+        meta_out["doc_type"] = dtype
+        meta_out["kb_collection"] = coll
         ch = Chunk(
             document_id=doc.id,
             chunk_index=int(meta.get("chunk_index", n)),
             content=content,
-            meta=meta,
+            meta=meta_out,
             embedding=emb,
         )
         db.add(ch)
@@ -159,10 +175,21 @@ def ingest_bytes(
     return doc.id, n
 
 
-def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> list[dict[str, Any]]:
+def search_chunks(
+    db: Session,
+    ollama: OllamaClient,
+    query: str,
+    top_k: int,
+    kb_collection: str | None = None,
+    doc_types: list[str] | None = None,
+) -> list[dict[str, Any]]:
     """混合检索：向量相似度（pgvector）+ 三元组文本匹配（pg_trgm），RRF 融合排序。
     若 pg_trgm 不可用则自动降级为纯向量检索。
+    kb_collection：分区，默认 default_kb_collection；doc_types 非空时仅保留对应 Document.doc_type。
     """
+    coll = resolve_kb_collection(kb_collection)
+    dfilter = sanitize_doc_types_list(doc_types)
+
     # Embedding 偶发长尾：这里允许 embed 失败时降级为 trgm-only
     try:
         qemb = ollama.embed(query[:8000])
@@ -179,12 +206,15 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
     if qemb is not None:
         dist_expr = Chunk.embedding.cosine_distance(qemb)
         t_vec = time.perf_counter()
-        vec_rows = db.execute(
+        vstmt = (
             select(Chunk.id, dist_expr.label("dist"))
-            .where(dist_expr < settings.vector_distance_threshold)  # 过滤掉明显不相关的片段
-            .order_by(dist_expr)
-            .limit(candidate)
-        ).all()
+            .join(Document, Chunk.document_id == Document.id)
+            .where(Document.kb_collection == coll)
+            .where(dist_expr < settings.vector_distance_threshold)
+        )
+        if dfilter:
+            vstmt = vstmt.where(Document.doc_type.in_(dfilter))
+        vec_rows = db.execute(vstmt.order_by(dist_expr).limit(candidate)).all()
         telemetry.record_timing("rag.vec_db_ms", (time.perf_counter() - t_vec) * 1000)
         if not vec_rows and not settings.hybrid_search:
             logging.info("[RAG] no chunks within distance threshold %.2f", settings.vector_distance_threshold)
@@ -204,12 +234,15 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
             wsim_expr = func.word_similarity(query, Chunk.content)
             trgm_min = float(settings.trgm_word_similarity_min)
             t_trgm = time.perf_counter()
-            trgm_rows = db.execute(
+            tstmt = (
                 select(Chunk.id, wsim_expr.label("wsim"))
+                .join(Document, Chunk.document_id == Document.id)
+                .where(Document.kb_collection == coll)
                 .where(wsim_expr > trgm_min)
-                .order_by(wsim_expr.desc())
-                .limit(candidate)
-            ).all()
+            )
+            if dfilter:
+                tstmt = tstmt.where(Document.doc_type.in_(dfilter))
+            trgm_rows = db.execute(tstmt.order_by(wsim_expr.desc()).limit(candidate)).all()
             telemetry.record_timing("rag.trgm_db_ms", (time.perf_counter() - t_trgm) * 1000)
             trgm_ranks = {row.id: i + 1 for i, row in enumerate(trgm_rows)}
             trgm_similarity = {row.id: round(float(row.wsim), 4) for row in trgm_rows}
@@ -291,6 +324,8 @@ def search_chunks(db: Session, ollama: OllamaClient, query: str, top_k: int) -> 
             {
                 "chunk_id": ch.id,
                 "source": doc.source,
+                "kb_collection": doc.kb_collection,
+                "doc_type": doc.doc_type,
                 "page": page,
                 "score": display_score,
                 # 额外返回调试字段（前端当前未展示）
@@ -358,7 +393,12 @@ def rewrite_query(ollama: OllamaClient, query: str) -> list[str]:
 
 
 def multi_query_search(
-    db: Session, ollama: OllamaClient, query: str, top_k: int
+    db: Session,
+    ollama: OllamaClient,
+    query: str,
+    top_k: int,
+    kb_collection: str | None = None,
+    doc_types: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """多路召回：对原始查询 + 改写变体分别检索，按最高 RRF 分去重合并，返回 top_k 结果。"""
     t_total = time.perf_counter()
@@ -366,7 +406,7 @@ def multi_query_search(
     initial: list[dict[str, Any]] = []
     t_init = time.perf_counter()
     try:
-        initial = search_chunks(db, ollama, query, top_k)
+        initial = search_chunks(db, ollama, query, top_k, kb_collection, doc_types)
     finally:
         telemetry.record_timing("rag.initial_search_ms", (time.perf_counter() - t_init) * 1000)
 
@@ -393,7 +433,7 @@ def multi_query_search(
 
     for q in queries:
         t_q = time.perf_counter()
-        for r in search_chunks(db, ollama, q, top_k):
+        for r in search_chunks(db, ollama, q, top_k, kb_collection, doc_types):
             cid = str(r["chunk_id"])
             r_key = float(r.get("rrf_score") or r.get("score") or 0.0)
             m_key = float(merged.get(cid, {}).get("rrf_score") or merged.get(cid, {}).get("score") or 0.0)

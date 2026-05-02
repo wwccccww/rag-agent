@@ -25,13 +25,21 @@ import os
 os.chdir(BACKEND_DIR)
 
 from app.database import SessionLocal, init_db
+from app.kb import sanitize_doc_types_list
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_chunks
 
 
 # ── 纯向量检索（不做 query rewrite，直接 1 次 embedding 搜索）────────────────
-def vector_only_search(db, ollama: OllamaClient, query: str, top_k: int) -> list[dict[str, Any]]:
-    return search_chunks(db, ollama, query, top_k)
+def vector_only_search(
+    db,
+    ollama: OllamaClient,
+    query: str,
+    top_k: int,
+    kb_collection: str | None,
+    doc_types: list[str] | None,
+) -> list[dict[str, Any]]:
+    return search_chunks(db, ollama, query, top_k, kb_collection, doc_types)
 
 
 # ── Recall@k 计算 ────────────────────────────────────────────────────────────
@@ -112,6 +120,8 @@ def run_eval(
     top_k: int,
     output_path: str | None,
     judge: bool,
+    kb_collection: str | None,
+    doc_types: list[str] | None,
 ) -> None:
     with open(cases_path, encoding="utf-8") as f:
         data = json.load(f)
@@ -120,7 +130,12 @@ def run_eval(
         print("❌ test_cases.json 中没有测试用例，请先填写。")
         return
 
-    print(f"📋 共 {len(cases)} 条测试用例，top_k={top_k}，LLM-Judge={'开启' if judge else '关闭'}")
+    kb_note = kb_collection or "(默认分区)"
+    dt_note = doc_types or "(不按类型过滤)"
+    print(
+        f"📋 共 {len(cases)} 条测试用例，top_k={top_k}，kb_collection={kb_note}，doc_types={dt_note}，"
+        f"LLM-Judge={'开启' if judge else '关闭'}"
+    )
     print("=" * 72)
 
     init_db()
@@ -138,12 +153,12 @@ def run_eval(
 
         # 混合检索
         t0 = time.perf_counter()
-        hybrid_results = multi_query_search(db, ollama, q, top_k)
+        hybrid_results = multi_query_search(db, ollama, q, top_k, kb_collection, doc_types)
         hybrid_ms = int((time.perf_counter() - t0) * 1000)
 
         # 纯向量检索
         t0 = time.perf_counter()
-        vec_results = vector_only_search(db, ollama, q, top_k)
+        vec_results = vector_only_search(db, ollama, q, top_k, kb_collection, doc_types)
         vec_ms = int((time.perf_counter() - t0) * 1000)
 
         hybrid_recall = recall_at_k(hybrid_results, expected_kw, top_k)
@@ -232,11 +247,27 @@ if __name__ == "__main__":
     parser.add_argument("--cases", default="eval/test_cases.json", help="测试用例 JSON 文件路径")
     parser.add_argument("--output", default=None, help="Markdown 报告输出路径（默认打印到终端）")
     parser.add_argument("--judge", action="store_true", help="开启 LLM-as-Judge 忠实度评分（较慢）")
+    parser.add_argument(
+        "--kb-collection",
+        default=None,
+        help="知识库分区；也可用环境变量 EVAL_KB_COLLECTION",
+    )
+    parser.add_argument(
+        "--doc-types",
+        default=None,
+        help="逗号分隔文档类型：tutorial,api,requirements,general；也可用 EVAL_DOC_TYPES",
+    )
     args = parser.parse_args()
+
+    kb = (args.kb_collection or os.environ.get("EVAL_KB_COLLECTION") or "").strip() or None
+    dt_raw = args.doc_types or os.environ.get("EVAL_DOC_TYPES") or ""
+    doc_types = sanitize_doc_types_list([x.strip() for x in dt_raw.split(",") if x.strip()]) if dt_raw.strip() else None
 
     run_eval(
         cases_path=args.cases,
         top_k=args.top_k,
         output_path=args.output,
         judge=args.judge,
+        kb_collection=kb,
+        doc_types=doc_types,
     )

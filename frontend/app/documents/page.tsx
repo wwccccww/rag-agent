@@ -1,8 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
-type Doc = { id: string; title: string | null; source: string | null; chunk_count: number; created_at: string };
+type Doc = {
+  id: string;
+  title: string | null;
+  source: string | null;
+  kb_collection: string;
+  doc_type: string;
+  chunk_count: number;
+  created_at: string;
+};
 type Chunk = { id: string; chunk_index: number; content: string; meta: Record<string, unknown> };
 
 export default function DocumentsPage() {
@@ -12,11 +20,26 @@ export default function DocumentsPage() {
   const [chunks, setChunks] = useState<Chunk[]>([]);
   const [chunksLoading, setChunksLoading] = useState(false);
   const [deleting, setDeleting] = useState<string | null>(null);
+  const [kbFilter, setKbFilter] = useState("");
+  const [docTypeFilter, setDocTypeFilter] = useState("");
 
-  const load = async () => {
+  useEffect(() => {
+    try {
+      setKbFilter(localStorage.getItem("rag_kb_collection") ?? "");
+    } catch {
+      /* ignore */
+    }
+  }, []);
+
+  const load = useCallback(async () => {
     setLoading(true);
     try {
-      const r = await fetch("/api/documents");
+      let path = "/api/documents";
+      const p = new URLSearchParams();
+      if (kbFilter.trim()) p.set("kb_collection", kbFilter.trim());
+      if (docTypeFilter) p.set("doc_type", docTypeFilter);
+      if ([...p.keys()].length) path += `?${p.toString()}`;
+      const r = await fetch(path, { cache: "no-store" });
       if (!r.ok) return;
       const data = await r.json().catch(() => []);
       setDocs(Array.isArray(data) ? data : []);
@@ -25,9 +48,11 @@ export default function DocumentsPage() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [kbFilter, docTypeFilter]);
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    void load();
+  }, [load]);
 
   const openDoc = async (doc: Doc) => {
     setSelected(doc);
@@ -61,6 +86,34 @@ export default function DocumentsPage() {
         <div className="sidebar-header">
           <h1>知识库文档</h1>
           <p>{docs.length} 个文档</p>
+          <div className="field-label" style={{ marginTop: 8 }}>筛选</div>
+          <input
+            className="userid-input"
+            style={{ width: "100%", marginTop: 4 }}
+            placeholder="kb_collection"
+            value={kbFilter}
+            onChange={(e) => {
+              const v = e.target.value;
+              setKbFilter(v);
+              try {
+                localStorage.setItem("rag_kb_collection", v);
+              } catch {}
+            }}
+            aria-label="分区筛选"
+          />
+          <select
+            className="userid-input"
+            style={{ width: "100%", marginTop: 6 }}
+            value={docTypeFilter}
+            onChange={(e) => setDocTypeFilter(e.target.value)}
+            aria-label="文档类型筛选"
+          >
+            <option value="">全部类型</option>
+            <option value="tutorial">tutorial</option>
+            <option value="api">api</option>
+            <option value="requirements">requirements</option>
+            <option value="general">general</option>
+          </select>
         </div>
         <div className="sidebar-body">
           {loading && <div className="field-label" style={{ padding: "12px 10px" }}>加载中…</div>}
@@ -80,7 +133,9 @@ export default function DocumentsPage() {
                   {doc.title ?? doc.source ?? "无标题"}
                 </span>
               </div>
-              <div style={{ display: "flex", gap: 8, paddingLeft: 20 }}>
+              <div style={{ display: "flex", gap: 8, paddingLeft: 20, flexWrap: "wrap" }}>
+                <span className="badge green" style={{ fontSize: 10 }}>{doc.kb_collection}</span>
+                <span className="badge" style={{ fontSize: 10 }}>{doc.doc_type}</span>
                 <span className="badge" style={{ fontSize: 10 }}>{doc.chunk_count} 个片段</span>
                 <button
                   className="btn danger"

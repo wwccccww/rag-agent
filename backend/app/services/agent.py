@@ -112,6 +112,7 @@ AGENT_TOOLS: list[dict] = [
                 "在知识库中搜索与问题相关的文档片段。"
                 "用于回答知识性、专业性、文档内容相关的问题。"
                 "不要用于询问用户个人信息、闲聊或简单事实（如当前时间）。"
+                "检索范围（分区/文档类型）由系统根据当前会话固定，只能通过 query 指定检索词，不要尝试传入其它范围参数。"
             ),
             "parameters": {
                 "type": "object",
@@ -198,13 +199,15 @@ def _execute_tool(
     tool_name: str,
     tool_args: dict[str, Any],
     top_k: int,
+    kb_collection: str | None,
+    doc_types: list[str] | None,
 ) -> tuple[str, list[dict]]:
     """执行单个工具，返回 (文本结果, sources列表)。"""
     if tool_name == "search_knowledge_base":
         query = str(tool_args.get("query", "")).strip()
         if not query:
             return "查询词为空，无法搜索。", []
-        results = multi_query_search(db, ollama, query, top_k)
+        results = multi_query_search(db, ollama, query, top_k, kb_collection, doc_types)
         if not results:
             return "知识库中未找到与该查询相关的内容。", []
         parts = [
@@ -241,6 +244,8 @@ def run_agent(
     history: list[dict],
     top_k: int,
     session_summary: str | None,
+    kb_collection: str | None = None,
+    doc_types: list[str] | None = None,
 ) -> Generator[dict[str, Any], None, None]:
     """
     Agent 主循环 Generator。
@@ -327,7 +332,7 @@ def run_agent(
             t0 = time.perf_counter()
             try:
                 result_text, sources = _execute_tool(
-                    db, ollama, user_id, tool_name, tool_args, top_k
+                    db, ollama, user_id, tool_name, tool_args, top_k, kb_collection, doc_types
                 )
             except Exception as e:
                 result_text = f"工具执行出错：{e}"

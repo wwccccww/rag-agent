@@ -65,6 +65,42 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning("[DB] alter messages.extra failed: %s", e)
 
+    # documents：知识库分区 + 文档类型（幂等迁移，兼容旧库）
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS kb_collection "
+                    "VARCHAR(64) NOT NULL DEFAULT 'default'"
+                )
+            )
+            conn.execute(
+                text(
+                    "ALTER TABLE documents ADD COLUMN IF NOT EXISTS doc_type "
+                    "VARCHAR(32) NOT NULL DEFAULT 'general'"
+                )
+            )
+            conn.commit()
+        logging.info("[DB] documents.kb_collection / doc_type columns ready")
+    except Exception as e:
+        logging.warning("[DB] alter documents kb/doc_type failed: %s", e)
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text("CREATE INDEX IF NOT EXISTS idx_documents_kb_collection ON documents (kb_collection)")
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_documents_kb_doc_type "
+                    "ON documents (kb_collection, doc_type)"
+                )
+            )
+            conn.commit()
+        logging.info("[DB] documents kb/doc_type indexes ready")
+    except Exception as e:
+        logging.warning("[DB] documents kb indexes failed: %s", e)
+
     # HNSW 向量索引：大规模场景下比 IVFFlat 更稳定，查询时不需要预先 probe 调参
     # m=16 ef_construction=64 是官方推荐的均衡参数
     for table, col in [("chunks", "embedding"), ("memories", "embedding")]:
