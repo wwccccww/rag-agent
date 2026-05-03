@@ -80,7 +80,7 @@ npm run dev
 
 ### 0. Tool Calling Agent（核心亮点）
 
-对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」侧栏仅保留摘要按钮，点开后在**居中弹窗**内配置：打开弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（若侧栏填了 `kb_collection` 则带同名查询参数），把**知识库里已出现过的 doc_type**（如 `knowledge`）与四个预设一起显示为快捷芯片；你在「自定义」里添加且库中尚未出现的类型会额外记入 `localStorage` 键 `rag_doc_type_shortcuts_<userId>`（最多 16 个，虚线边框芯片）。当前勾选保存在 `rag_doc_types_<userId>`。文档列表的**类型筛选**与**批量目标类型**同样通过弹窗操作；打开任一弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（与当前页「分区」筛选一致时带 `kb_collection`）并**合并读取** `rag_doc_type_shortcuts_<userId>`，因此聊天页「自定义」里加的 slug 会出现在芯片里，且**不会因当前按类型筛选列表变窄而丢失**其它已在库中出现的类型（例如选中 `api` 后仍可见 `knowledge`）。入库页的 **doc_type** 亦为弹窗选择。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
+对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」侧栏仅保留摘要按钮，点开后在**居中弹窗**内配置：打开弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（若侧栏填了 `kb_collection` 则带同名查询参数），把**知识库里已出现过的 doc_type**（如 `knowledge`）与四个预设一起显示为快捷芯片；你在「自定义」里添加且库中尚未出现的类型会额外记入 `localStorage` 键 `rag_doc_type_shortcuts_<userId>`（最多 16 个，虚线边框芯片）。当前勾选保存在 `rag_doc_types_<userId>`。文档列表的**类型筛选**与**批量目标类型**同样通过弹窗操作；打开任一弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（与当前页「分区」筛选一致时带 `kb_collection`）并**合并读取** `rag_doc_type_shortcuts_<userId>`，因此聊天页「自定义」里加的 slug 会出现在芯片里，且**不会因当前按类型筛选列表变窄而丢失**其它已在库中出现的类型（例如选中 `api` 后仍可见 `knowledge`）。入库页「选择文档类型」弹窗打开时同样请求 **catalog** 并合并 **`rag_doc_type_shortcuts_<userId>`**，快捷区与对话/文档列表语义一致（虚线=仅本地、灰边=库中已有）。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
 
 ```
 用户消息

@@ -1,7 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import { PRESET_DOC_TYPES } from "@/lib/kb";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  PRESET_DOC_TYPES,
+  PRESET_DOC_TYPE_SET,
+  slugDocType,
+  USER_ID_KEY,
+  loadDocShortcutsForUser,
+} from "@/lib/kb";
 
 type Mode = "file" | "url" | "text";
 type FileStatus = "pending" | "uploading" | "success" | "dup" | "error";
@@ -48,7 +54,31 @@ export default function IngestPage() {
   const [kbCollection, setKbCollection] = useState("");
   const [docType, setDocType] = useState("general");
   const [docTypeModalOpen, setDocTypeModalOpen] = useState(false);
+  const [catalogDocTypes, setCatalogDocTypes] = useState<string[]>([]);
+  const [chatShortcutDocTypes, setChatShortcutDocTypes] = useState<string[]>([]);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  const catalogTypeSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const c of catalogDocTypes) {
+      const sl = slugDocType(c);
+      if (sl) set.add(sl);
+    }
+    return set;
+  }, [catalogDocTypes]);
+
+  const ingestDocTypeChips = useMemo(() => {
+    const s = new Set<string>([...PRESET_DOC_TYPES]);
+    for (const t of catalogDocTypes) {
+      const sl = slugDocType(t);
+      if (sl) s.add(sl);
+    }
+    for (const t of chatShortcutDocTypes) {
+      const sl = slugDocType(t);
+      if (sl) s.add(sl);
+    }
+    return Array.from(s).sort();
+  }, [catalogDocTypes, chatShortcutDocTypes]);
 
   useEffect(() => {
     setKbCollection(loadKbCollection());
@@ -62,6 +92,39 @@ export default function IngestPage() {
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
   }, [docTypeModalOpen]);
+
+  useEffect(() => {
+    if (!docTypeModalOpen) return;
+    try {
+      const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+      setChatShortcutDocTypes(loadDocShortcutsForUser(uid));
+    } catch {
+      setChatShortcutDocTypes([]);
+    }
+  }, [docTypeModalOpen]);
+
+  useEffect(() => {
+    if (!docTypeModalOpen) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        let url = "/api/documents/catalog/doc-types";
+        if (kbCollection.trim()) {
+          url += `?kb_collection=${encodeURIComponent(kbCollection.trim())}`;
+        }
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok || cancelled) return;
+        const j = (await r.json()) as { doc_types?: string[] };
+        const list = Array.isArray(j.doc_types) ? j.doc_types : [];
+        if (!cancelled) setCatalogDocTypes(list);
+      } catch {
+        if (!cancelled) setCatalogDocTypes([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [docTypeModalOpen, kbCollection]);
 
   const addFiles = useCallback((newFiles: FileList | File[]) => {
     const arr = Array.from(newFiles);
@@ -377,18 +440,23 @@ export default function IngestPage() {
             </header>
             <div className="type-modal-body">
               <div className="doc-type-panel" style={{ marginTop: 0, border: "none", background: "transparent", padding: 0 }}>
-                <div className="doc-type-panel-sub">快捷</div>
+                <div className="doc-type-panel-sub">快捷：预设 · 知识库已有 · 仅本地保存</div>
                 <div className="doc-type-toolbar" style={{ marginBottom: 10 }}>
-                  {PRESET_DOC_TYPES.map((t) => (
-                    <button
-                      key={t}
-                      type="button"
-                      className={`doc-type-chip${docType.trim().toLowerCase() === t ? " on" : ""}`}
-                      onClick={() => setDocType(t)}
-                    >
-                      {t}
-                    </button>
-                  ))}
+                  {ingestDocTypeChips.map((t) => {
+                    const on = docType.trim().toLowerCase() === t;
+                    const extra =
+                      PRESET_DOC_TYPE_SET.has(t) ? "" : catalogTypeSet.has(t) ? " doc-type-chip-catalog" : " doc-type-chip-custom";
+                    return (
+                      <button
+                        key={t}
+                        type="button"
+                        className={`doc-type-chip${on ? " on" : ""}${extra}`}
+                        onClick={() => setDocType(t)}
+                      >
+                        {t}
+                      </button>
+                    );
+                  })}
                 </div>
                 <div className="doc-type-panel-sub">自定义 slug</div>
                 <input
