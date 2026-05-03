@@ -62,6 +62,7 @@ npm run dev
 | `POST /v1/chat/stream`       | SSE 流式对话；JSON 可选 `kb_collection`、`doc_types`（字符串数组，最多 8 个，规则同 `doc_type`）                         |
 | `POST /v1/chat/agent/stream` | **Agent 模式**；知识库检索范围由请求的 `kb_collection`/`doc_types` 固定，工具仅传 `query`            |
 | `GET /v1/documents`          | 文档列表；可选查询参数 `kb_collection`、`doc_type` 筛选                                       |
+| `GET /v1/documents/catalog/doc-types` | 去重后的 `doc_type` 列表；可选 `kb_collection` 仅统计该分区（对话侧栏与当前分区一致时用于快捷展示；路径避免与 `/documents/{id}` 冲突） |
 | `PATCH /v1/documents/{id}`   | 入库后修改该文档的 `kb_collection` 与/或 `doc_type`（JSON 至少其一）；同步各 chunk 的 `meta`；若目标分区已有相同 `content_sha256` 则 **409** |
 | `PATCH /v1/documents/batch`  | 同上批量，请求体 `document_ids`（≤100）+ 可选 `kb_collection` / `doc_type`（至少其一）；任一失败整批回滚                         |
 | `POST /v1/memory`            | 手动写入长期记忆（自动向量化）                                                           |
@@ -79,7 +80,7 @@ npm run dev
 
 ### 0. Tool Calling Agent（核心亮点）
 
-对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」为**暗色面板**：上方 **动态标签条**（可点 × 移除），下方「快捷」四预设 +「自定义」输入，可多选并与 `user_id` 一并写入 `localStorage`。文档列表页的类型筛选为**圆角芯片单选**（无浏览器原生 datalist 白底弹层）。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
+对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」侧栏仅保留摘要按钮，点开后在**居中弹窗**内配置：打开弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（若侧栏填了 `kb_collection` 则带同名查询参数），把**知识库里已出现过的 doc_type**（如 `knowledge`）与四个预设一起显示为快捷芯片；你在「自定义」里添加且库中尚未出现的类型会额外记入 `localStorage` 键 `rag_doc_type_shortcuts_<userId>`（最多 16 个，虚线边框芯片）。当前勾选保存在 `rag_doc_types_<userId>`。文档列表的**类型筛选**与**批量目标类型**同样通过弹窗操作；打开任一弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（与当前页「分区」筛选一致时带 `kb_collection`）并**合并读取** `rag_doc_type_shortcuts_<userId>`，因此聊天页「自定义」里加的 slug 会出现在芯片里，且**不会因当前按类型筛选列表变窄而丢失**其它已在库中出现的类型（例如选中 `api` 后仍可见 `knowledge`）。入库页的 **doc_type** 亦为弹窗选择。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
 
 ```
 用户消息

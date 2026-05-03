@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { PRESET_DOC_TYPES, slugDocType } from "@/lib/kb";
+import { PRESET_DOC_TYPES, slugDocType, USER_ID_KEY, loadDocShortcutsForUser } from "@/lib/kb";
 
 type Doc = {
   id: string;
@@ -28,6 +28,12 @@ export default function DocumentsPage() {
   const [batchDocType, setBatchDocType] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
   const [customDocFilterDraft, setCustomDocFilterDraft] = useState("");
+  const [filterTypeModalOpen, setFilterTypeModalOpen] = useState(false);
+  const [batchTypeModalOpen, setBatchTypeModalOpen] = useState(false);
+  /** 与聊天页「配置检索文档类型」自定义快捷同源（localStorage），便于跨页一致 */
+  const [chatShortcutDocTypes, setChatShortcutDocTypes] = useState<string[]>([]);
+  /** 当前库/分区内出现过的类型（与列表筛选无关），避免选中 api 后芯片只剩 api */
+  const [catalogDocTypes, setCatalogDocTypes] = useState<string[]>([]);
 
   useEffect(() => {
     try {
@@ -37,11 +43,64 @@ export default function DocumentsPage() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!filterTypeModalOpen && !batchTypeModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setFilterTypeModalOpen(false);
+        setBatchTypeModalOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [filterTypeModalOpen, batchTypeModalOpen]);
+
+  useEffect(() => {
+    if (!filterTypeModalOpen && !batchTypeModalOpen) return;
+    try {
+      const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+      setChatShortcutDocTypes(loadDocShortcutsForUser(uid));
+    } catch {
+      setChatShortcutDocTypes([]);
+    }
+  }, [filterTypeModalOpen, batchTypeModalOpen]);
+
+  useEffect(() => {
+    if (!filterTypeModalOpen && !batchTypeModalOpen) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        let url = "/api/documents/catalog/doc-types";
+        if (kbFilter.trim()) {
+          url += `?kb_collection=${encodeURIComponent(kbFilter.trim())}`;
+        }
+        const r = await fetch(url, { cache: "no-store" });
+        if (!r.ok || cancelled) return;
+        const j = (await r.json()) as { doc_types?: string[] };
+        const list = Array.isArray(j.doc_types) ? j.doc_types : [];
+        if (!cancelled) setCatalogDocTypes(list);
+      } catch {
+        if (!cancelled) setCatalogDocTypes([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [filterTypeModalOpen, batchTypeModalOpen, kbFilter]);
+
   const docTypeOptions = useMemo(() => {
     const s = new Set<string>([...PRESET_DOC_TYPES]);
     for (const d of docs) s.add(d.doc_type);
+    for (const t of catalogDocTypes) {
+      const sl = slugDocType(t);
+      if (sl) s.add(sl);
+    }
+    for (const t of chatShortcutDocTypes) {
+      const sl = slugDocType(t);
+      if (sl) s.add(sl);
+    }
     return Array.from(s).sort();
-  }, [docs]);
+  }, [docs, catalogDocTypes, chatShortcutDocTypes]);
 
   const docTypeFilterChips = useMemo(() => {
     const s = new Set<string>(docTypeOptions);
@@ -188,45 +247,17 @@ export default function DocumentsPage() {
             aria-label="分区筛选"
           />
           <div className="documents-filter-block">
-            <div className="field-label" style={{ marginTop: 2 }}>按类型（单选）</div>
-            <div className="documents-type-chip-row" role="listbox" aria-label="文档类型筛选">
-              <button
-                type="button"
-                className={`documents-type-chip${!docTypeFilter.trim() ? " active" : ""}`}
-                onClick={() => setDocTypeFilter("")}
-              >
-                全部
-              </button>
-              {docTypeFilterChips.map((t) => (
-                <button
-                  key={t}
-                  type="button"
-                  className={`documents-type-chip${docTypeFilter.trim().toLowerCase() === t ? " active" : ""}`}
-                  onClick={() => pickDocTypeFilter(t)}
-                >
-                  {t}
-                </button>
-              ))}
-            </div>
-            <div className="field-label" style={{ marginTop: 8 }}>其它 slug</div>
-            <div className="doc-type-add-row" style={{ marginTop: 4 }}>
-              <input
-                className="userid-input"
-                placeholder="输入后应用，如 internal-wiki"
-                value={customDocFilterDraft}
-                onChange={(e) => setCustomDocFilterDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter") {
-                    e.preventDefault();
-                    applyCustomDocFilter();
-                  }
-                }}
-                aria-label="自定义文档类型筛选"
-              />
-              <button type="button" onClick={() => applyCustomDocFilter()}>
-                应用
-              </button>
-            </div>
+            <div className="field-label" style={{ marginTop: 2 }}>按类型筛选</div>
+            <button
+              type="button"
+              className="btn type-modal-trigger"
+              style={{ width: "100%", marginTop: 4 }}
+              onClick={() => setFilterTypeModalOpen(true)}
+            >
+              {!docTypeFilter.trim()
+                ? "全部类型 · 点击在窗口中选择"
+                : `当前：${docTypeFilter}`}
+            </button>
           </div>
           {selectedIds.size > 0 && (
             <div
@@ -250,33 +281,16 @@ export default function DocumentsPage() {
                 aria-label="批量目标分区"
               />
               <div className="field-label" style={{ marginBottom: 4 }}>目标类型</div>
-              <div className="documents-batch-type-row">
-                <button
-                  type="button"
-                  className={`documents-type-chip${!batchDocType.trim() ? " active" : ""}`}
-                  onClick={() => setBatchDocType("")}
-                >
-                  不改类型
-                </button>
-                {docTypeOptions.map((t) => (
-                  <button
-                    key={`batch-${t}`}
-                    type="button"
-                    className={`documents-type-chip${batchDocType.trim().toLowerCase() === t ? " active" : ""}`}
-                    onClick={() => setBatchDocType((prev) => (prev.trim().toLowerCase() === t ? "" : t))}
-                  >
-                    {t}
-                  </button>
-                ))}
-              </div>
-              <input
-                className="userid-input"
+              <button
+                type="button"
+                className="btn type-modal-trigger"
                 style={{ width: "100%", marginBottom: 8 }}
-                placeholder="或手动输入目标类型 slug"
-                value={batchDocType}
-                onChange={(e) => setBatchDocType(e.target.value)}
-                aria-label="批量目标文档类型"
-              />
+                onClick={() => setBatchTypeModalOpen(true)}
+              >
+                {!batchDocType.trim()
+                  ? "不改类型 · 点击在窗口中选择"
+                  : `当前目标：${batchDocType}`}
+              </button>
               <button
                 type="button"
                 className="btn"
@@ -394,6 +408,139 @@ export default function DocumentsPage() {
           ))}
         </div>
       </div>
+
+      {filterTypeModalOpen && (
+        <div
+          className="type-modal-root"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="documents-filter-type-modal-title"
+        >
+          <div className="type-modal-backdrop" onClick={() => setFilterTypeModalOpen(false)} />
+          <div className="type-modal-sheet">
+            <header className="type-modal-header">
+              <h2 id="documents-filter-type-modal-title" className="type-modal-title">
+                按类型筛选文档
+              </h2>
+              <button
+                type="button"
+                className="type-modal-close"
+                onClick={() => setFilterTypeModalOpen(false)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </header>
+            <div className="type-modal-body">
+              <div className="field-label" style={{ marginBottom: 6 }}>单选类型</div>
+              <div className="documents-type-chip-row" role="listbox" aria-label="文档类型筛选">
+                <button
+                  type="button"
+                  className={`documents-type-chip${!docTypeFilter.trim() ? " active" : ""}`}
+                  onClick={() => setDocTypeFilter("")}
+                >
+                  全部
+                </button>
+                {docTypeFilterChips.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className={`documents-type-chip${docTypeFilter.trim().toLowerCase() === t ? " active" : ""}`}
+                    onClick={() => pickDocTypeFilter(t)}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="field-label" style={{ marginTop: 14, marginBottom: 6 }}>其它 slug</div>
+              <div className="doc-type-add-row">
+                <input
+                  className="userid-input"
+                  placeholder="输入后应用，如 internal-wiki"
+                  value={customDocFilterDraft}
+                  onChange={(e) => setCustomDocFilterDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault();
+                      applyCustomDocFilter();
+                    }
+                  }}
+                  aria-label="自定义文档类型筛选"
+                />
+                <button type="button" onClick={() => applyCustomDocFilter()}>
+                  应用
+                </button>
+              </div>
+            </div>
+            <footer className="type-modal-footer">
+              <button type="button" className="btn" onClick={() => setFilterTypeModalOpen(false)}>
+                完成
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
+
+      {batchTypeModalOpen && (
+        <div
+          className="type-modal-root"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="documents-batch-type-modal-title"
+        >
+          <div className="type-modal-backdrop" onClick={() => setBatchTypeModalOpen(false)} />
+          <div className="type-modal-sheet">
+            <header className="type-modal-header">
+              <h2 id="documents-batch-type-modal-title" className="type-modal-title">
+                批量修改目标类型
+              </h2>
+              <button
+                type="button"
+                className="type-modal-close"
+                onClick={() => setBatchTypeModalOpen(false)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </header>
+            <div className="type-modal-body">
+              <div className="documents-type-chip-row">
+                <button
+                  type="button"
+                  className={`documents-type-chip${!batchDocType.trim() ? " active" : ""}`}
+                  onClick={() => setBatchDocType("")}
+                >
+                  不改类型
+                </button>
+                {docTypeOptions.map((t) => (
+                  <button
+                    key={`modal-batch-${t}`}
+                    type="button"
+                    className={`documents-type-chip${batchDocType.trim().toLowerCase() === t ? " active" : ""}`}
+                    onClick={() => setBatchDocType((prev) => (prev.trim().toLowerCase() === t ? "" : t))}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <div className="field-label" style={{ marginTop: 14, marginBottom: 6 }}>或手动输入 slug</div>
+              <input
+                className="userid-input"
+                style={{ width: "100%" }}
+                placeholder="目标 doc_type"
+                value={batchDocType}
+                onChange={(e) => setBatchDocType(e.target.value)}
+                aria-label="批量目标文档类型"
+              />
+            </div>
+            <footer className="type-modal-footer">
+              <button type="button" className="btn" onClick={() => setBatchTypeModalOpen(false)}>
+                完成
+              </button>
+            </footer>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -103,7 +103,7 @@ class ChunkItem(BaseModel):
 def list_documents(
     limit: int = Query(50, ge=1, le=200),
     kb_collection: str | None = Query(None, description="仅列出该分区下的文档"),
-    doc_type: str | None = Query(None, description="仅列出该文档类型（tutorial/api/requirements/general）"),
+    doc_type: str | None = Query(None, description="仅列出该 doc_type（与入库 slug 规则一致）"),
 ) -> list[DocItem]:
     db = SessionLocal()
     try:
@@ -136,6 +136,30 @@ def list_documents(
             )
             for doc, cnt in rows
         ]
+    finally:
+        db.close()
+
+
+@router.get("/documents/catalog/doc-types")
+def list_distinct_doc_types(
+    kb_collection: str | None = Query(None, description="若指定则仅统计该分区下出现过的 doc_type"),
+) -> dict[str, list[str]]:
+    """库中已出现过的 doc_type（去重、排序），供对话页/筛选与知识库实际类型对齐。
+
+    路径使用 `/documents/catalog/...` 而非 `/documents/types`，避免个别部署里与 `/documents/{doc_id}` 解析顺序冲突导致 **405**。
+    """
+    db = SessionLocal()
+    try:
+        stmt = select(Document.doc_type).distinct()
+        if kb_collection is not None and str(kb_collection).strip():
+            try:
+                coll = resolve_kb_collection(kb_collection)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            stmt = stmt.where(Document.kb_collection == coll)
+        stmt = stmt.order_by(Document.doc_type)
+        rows = db.execute(stmt).scalars().all()
+        return {"doc_types": [str(r) for r in rows]}
     finally:
         db.close()
 

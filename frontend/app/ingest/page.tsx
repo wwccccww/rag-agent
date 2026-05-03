@@ -47,11 +47,21 @@ export default function IngestPage() {
   const [over, setOver] = useState(false);
   const [kbCollection, setKbCollection] = useState("");
   const [docType, setDocType] = useState("general");
+  const [docTypeModalOpen, setDocTypeModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     setKbCollection(loadKbCollection());
   }, []);
+
+  useEffect(() => {
+    if (!docTypeModalOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setDocTypeModalOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [docTypeModalOpen]);
 
   const addFiles = useCallback((newFiles: FileList | File[]) => {
     const arr = Array.from(newFiles);
@@ -185,32 +195,16 @@ export default function IngestPage() {
             aria-label="知识库分区"
           />
         </div>
-        <div className="doc-type-panel" style={{ marginTop: 0 }}>
-          <div className="doc-type-panel-title">文档类型 doc_type</div>
-          <div className="doc-type-panel-sub">快捷</div>
-          <div className="doc-type-toolbar" style={{ marginBottom: 8 }}>
-            {PRESET_DOC_TYPES.map((t) => (
-              <button
-                key={t}
-                type="button"
-                className={`doc-type-chip${docType.trim().toLowerCase() === t ? " on" : ""}`}
-                onClick={() => setDocType(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-          <div className="doc-type-panel-sub">自定义 slug</div>
-          <input
-            className="text-input"
-            value={docType}
-            onChange={(e) => setDocType(e.target.value)}
-            placeholder="如 general、release-notes、my-wiki"
-            aria-label="文档类型"
-          />
-          <div className="field-label" style={{ marginTop: 6, color: "var(--text-dim)" }}>
-            保存为 1–32 位小写 [a-z0-9_-]；空格等会转为连字符（与后端一致）
-          </div>
+        <div>
+          <div className="field-label">文档类型 doc_type</div>
+          <button
+            type="button"
+            className="btn type-modal-trigger"
+            style={{ width: "100%", marginTop: 4 }}
+            onClick={() => setDocTypeModalOpen(true)}
+          >
+            {`当前：${docType || "general"} · 点击在窗口中修改`}
+          </button>
         </div>
       </div>
 
@@ -356,6 +350,65 @@ export default function IngestPage() {
       {singleResult && (
         <div className={`result-block ${singleResult.type}`} style={{ whiteSpace: "pre-wrap", marginTop: 12 }}>
           {singleResult.text}
+        </div>
+      )}
+
+      {docTypeModalOpen && (
+        <div
+          className="type-modal-root"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="ingest-doc-type-modal-title"
+        >
+          <div className="type-modal-backdrop" onClick={() => setDocTypeModalOpen(false)} />
+          <div className="type-modal-sheet">
+            <header className="type-modal-header">
+              <h2 id="ingest-doc-type-modal-title" className="type-modal-title">
+                选择文档类型
+              </h2>
+              <button
+                type="button"
+                className="type-modal-close"
+                onClick={() => setDocTypeModalOpen(false)}
+                aria-label="关闭"
+              >
+                ×
+              </button>
+            </header>
+            <div className="type-modal-body">
+              <div className="doc-type-panel" style={{ marginTop: 0, border: "none", background: "transparent", padding: 0 }}>
+                <div className="doc-type-panel-sub">快捷</div>
+                <div className="doc-type-toolbar" style={{ marginBottom: 10 }}>
+                  {PRESET_DOC_TYPES.map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`doc-type-chip${docType.trim().toLowerCase() === t ? " on" : ""}`}
+                      onClick={() => setDocType(t)}
+                    >
+                      {t}
+                    </button>
+                  ))}
+                </div>
+                <div className="doc-type-panel-sub">自定义 slug</div>
+                <input
+                  className="text-input"
+                  value={docType}
+                  onChange={(e) => setDocType(e.target.value)}
+                  placeholder="如 general、release-notes、my-wiki"
+                  aria-label="文档类型"
+                />
+                <div className="field-label" style={{ marginTop: 8, color: "var(--text-dim)" }}>
+                  保存为 1–32 位小写 [a-z0-9_-]；空格等会转为连字符（与后端一致）
+                </div>
+              </div>
+            </div>
+            <footer className="type-modal-footer">
+              <button type="button" className="btn" onClick={() => setDocTypeModalOpen(false)}>
+                完成
+              </button>
+            </footer>
+          </div>
         </div>
       )}
     </div>
