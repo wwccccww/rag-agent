@@ -117,7 +117,11 @@ def list_documents(
                 raise HTTPException(400, str(e)) from e
             stmt = stmt.where(Document.kb_collection == coll)
         if doc_type is not None and str(doc_type).strip():
-            stmt = stmt.where(Document.doc_type == normalize_doc_type(doc_type))
+            try:
+                dt = normalize_doc_type(doc_type)
+            except ValueError as e:
+                raise HTTPException(400, str(e)) from e
+            stmt = stmt.where(Document.doc_type == dt)
         stmt = stmt.group_by(Document.id).order_by(Document.created_at.desc()).limit(limit)
         rows = db.execute(stmt).all()
         return [
@@ -199,7 +203,13 @@ def _patch_document_row(db: Session, doc: Document, body: DocumentMetaPatchBody)
         )
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
-    new_dtype = normalize_doc_type(body.doc_type) if body.doc_type is not None else doc.doc_type
+    if body.doc_type is not None:
+        try:
+            new_dtype = normalize_doc_type(body.doc_type)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    else:
+        new_dtype = doc.doc_type
 
     if new_kb != doc.kb_collection and _conflict_same_sha_in_collection(
         db,

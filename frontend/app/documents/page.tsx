@@ -1,6 +1,7 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { PRESET_DOC_TYPES, slugDocType } from "@/lib/kb";
 
 type Doc = {
   id: string;
@@ -26,6 +27,7 @@ export default function DocumentsPage() {
   const [batchKb, setBatchKb] = useState("");
   const [batchDocType, setBatchDocType] = useState("");
   const [batchSaving, setBatchSaving] = useState(false);
+  const [customDocFilterDraft, setCustomDocFilterDraft] = useState("");
 
   useEffect(() => {
     try {
@@ -35,6 +37,33 @@ export default function DocumentsPage() {
     }
   }, []);
 
+  const docTypeOptions = useMemo(() => {
+    const s = new Set<string>([...PRESET_DOC_TYPES]);
+    for (const d of docs) s.add(d.doc_type);
+    return Array.from(s).sort();
+  }, [docs]);
+
+  const docTypeFilterChips = useMemo(() => {
+    const s = new Set<string>(docTypeOptions);
+    const cur = docTypeFilter.trim().toLowerCase();
+    if (cur) s.add(cur);
+    return Array.from(s).sort();
+  }, [docTypeOptions, docTypeFilter]);
+
+  const applyCustomDocFilter = () => {
+    const t = slugDocType(customDocFilterDraft);
+    if (!t) {
+      window.alert("无法解析为合法类型 slug（小写字母、数字、下划线、连字符）");
+      return;
+    }
+    setDocTypeFilter(t);
+    setCustomDocFilterDraft("");
+  };
+
+  const pickDocTypeFilter = (slug: string) => {
+    setDocTypeFilter((prev) => (prev.trim().toLowerCase() === slug ? "" : slug));
+  };
+
   const load = useCallback(async () => {
     setLoading(true);
     try {
@@ -42,7 +71,7 @@ export default function DocumentsPage() {
       const p = new URLSearchParams();
       if (kbFilter.trim()) p.set("kb_collection", kbFilter.trim());
       if (docTypeFilter) p.set("doc_type", docTypeFilter);
-      if ([...p.keys()].length) path += `?${p.toString()}`;
+      if (p.toString()) path += `?${p.toString()}`;
       const r = await fetch(path, { cache: "no-store" });
       if (!r.ok) return;
       const data = await r.json().catch(() => []);
@@ -107,7 +136,7 @@ export default function DocumentsPage() {
       return;
     }
     const body: { document_ids: string[]; kb_collection?: string; doc_type?: string } = {
-      document_ids: [...idsSnapshot],
+      document_ids: Array.from(idsSnapshot),
     };
     if (kb) body.kb_collection = kb;
     if (dt) body.doc_type = dt;
@@ -139,7 +168,7 @@ export default function DocumentsPage() {
   return (
     <div className="app-shell">
       {/* left: doc list */}
-      <aside className="sidebar" style={{ width: 300 }}>
+      <aside className="sidebar" style={{ width: 312 }}>
         <div className="sidebar-header">
           <h1>知识库文档</h1>
           <p>{docs.length} 个文档</p>
@@ -158,19 +187,47 @@ export default function DocumentsPage() {
             }}
             aria-label="分区筛选"
           />
-          <select
-            className="userid-input"
-            style={{ width: "100%", marginTop: 6 }}
-            value={docTypeFilter}
-            onChange={(e) => setDocTypeFilter(e.target.value)}
-            aria-label="文档类型筛选"
-          >
-            <option value="">全部类型</option>
-            <option value="tutorial">tutorial</option>
-            <option value="api">api</option>
-            <option value="requirements">requirements</option>
-            <option value="general">general</option>
-          </select>
+          <div className="documents-filter-block">
+            <div className="field-label" style={{ marginTop: 2 }}>按类型（单选）</div>
+            <div className="documents-type-chip-row" role="listbox" aria-label="文档类型筛选">
+              <button
+                type="button"
+                className={`documents-type-chip${!docTypeFilter.trim() ? " active" : ""}`}
+                onClick={() => setDocTypeFilter("")}
+              >
+                全部
+              </button>
+              {docTypeFilterChips.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`documents-type-chip${docTypeFilter.trim().toLowerCase() === t ? " active" : ""}`}
+                  onClick={() => pickDocTypeFilter(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="field-label" style={{ marginTop: 8 }}>其它 slug</div>
+            <div className="doc-type-add-row" style={{ marginTop: 4 }}>
+              <input
+                className="userid-input"
+                placeholder="输入后应用，如 internal-wiki"
+                value={customDocFilterDraft}
+                onChange={(e) => setCustomDocFilterDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    applyCustomDocFilter();
+                  }
+                }}
+                aria-label="自定义文档类型筛选"
+              />
+              <button type="button" onClick={() => applyCustomDocFilter()}>
+                应用
+              </button>
+            </div>
+          </div>
           {selectedIds.size > 0 && (
             <div
               style={{
@@ -192,19 +249,34 @@ export default function DocumentsPage() {
                 onChange={(e) => setBatchKb(e.target.value)}
                 aria-label="批量目标分区"
               />
-              <select
+              <div className="field-label" style={{ marginBottom: 4 }}>目标类型</div>
+              <div className="documents-batch-type-row">
+                <button
+                  type="button"
+                  className={`documents-type-chip${!batchDocType.trim() ? " active" : ""}`}
+                  onClick={() => setBatchDocType("")}
+                >
+                  不改类型
+                </button>
+                {docTypeOptions.map((t) => (
+                  <button
+                    key={`batch-${t}`}
+                    type="button"
+                    className={`documents-type-chip${batchDocType.trim().toLowerCase() === t ? " active" : ""}`}
+                    onClick={() => setBatchDocType((prev) => (prev.trim().toLowerCase() === t ? "" : t))}
+                  >
+                    {t}
+                  </button>
+                ))}
+              </div>
+              <input
                 className="userid-input"
                 style={{ width: "100%", marginBottom: 8 }}
+                placeholder="或手动输入目标类型 slug"
                 value={batchDocType}
                 onChange={(e) => setBatchDocType(e.target.value)}
                 aria-label="批量目标文档类型"
-              >
-                <option value="">类型不改（仅当上面填了分区时）</option>
-                <option value="tutorial">tutorial</option>
-                <option value="api">api</option>
-                <option value="requirements">requirements</option>
-                <option value="general">general</option>
-              </select>
+              />
               <button
                 type="button"
                 className="btn"

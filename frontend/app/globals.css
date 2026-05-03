@@ -188,6 +188,248 @@ a:hover { text-decoration: underline; }
 .sync-btn:disabled { cursor: default; }
 .sync-btn.spinning { animation: spin 0.8s linear infinite; color: var(--accent); }
 
+.session-toolbar-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.purge-sessions-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  padding: 2px 6px;
+  border-radius: 4px;
+  transition: color 0.15s, background 0.15s;
+}
+
+.purge-sessions-btn:hover:not(:disabled) {
+  color: var(--red);
+  background: rgba(248, 81, 73, 0.12);
+}
+
+.purge-sessions-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* ── 对话侧栏：检索文档类型面板 ── */
+.doc-type-panel {
+  margin-top: 10px;
+  padding: 10px 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: linear-gradient(165deg, rgba(20, 35, 55, 0.55) 0%, rgba(12, 20, 34, 0.9) 100%);
+}
+
+.doc-type-panel-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  margin-bottom: 8px;
+}
+
+.doc-type-pill-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  min-height: 32px;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(0, 0, 0, 0.22);
+  border: 1px dashed var(--border);
+}
+
+.doc-type-pill-empty {
+  font-size: 12px;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+.doc-type-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(79, 158, 255, 0.35);
+  background: rgba(79, 158, 255, 0.12);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  line-height: 1.2;
+  transition: background 0.12s, border-color 0.12s, transform 0.1s;
+}
+
+.doc-type-pill:hover {
+  background: rgba(79, 158, 255, 0.22);
+  border-color: var(--accent);
+}
+
+.doc-type-pill:active {
+  transform: scale(0.97);
+}
+
+.doc-type-pill-x {
+  font-size: 14px;
+  font-weight: 400;
+  opacity: 0.75;
+  line-height: 1;
+}
+
+.doc-type-panel-sub {
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  margin-bottom: 6px;
+  margin-top: 2px;
+}
+
+.doc-type-panel .doc-type-toolbar {
+  margin-top: 0;
+  gap: 8px;
+}
+
+.doc-type-clear-all {
+  margin-top: 10px;
+  width: 100%;
+  padding: 6px;
+  font-size: 11px;
+  border-radius: 8px;
+  border: 1px dashed var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+}
+
+.doc-type-clear-all:hover {
+  color: var(--text);
+  border-color: var(--text-dim);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+/* ── 文档列表侧栏：类型筛选芯片（单选）── */
+.documents-filter-block {
+  margin-top: 8px;
+}
+
+.documents-type-chip-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+  max-height: 120px;
+  overflow-y: auto;
+  padding: 2px 0;
+}
+
+.documents-type-chip {
+  font-size: 11px;
+  padding: 5px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: border-color 0.12s, background 0.12s, color 0.12s;
+  white-space: nowrap;
+}
+
+.documents-type-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.documents-type-chip.active {
+  border-color: var(--accent);
+  background: rgba(79, 158, 255, 0.15);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.documents-batch-type-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 8px;
+  max-height: 88px;
+  overflow-y: auto;
+}
+
+.doc-type-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+}
+
+.doc-type-chip {
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text-muted);
+  cursor: pointer;
+  line-height: 1.2;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+
+.doc-type-chip:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+.doc-type-chip.on {
+  border-color: var(--green);
+  background: var(--green-dim);
+  color: var(--green);
+  font-weight: 600;
+}
+
+.doc-type-add-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 8px;
+  align-items: stretch;
+}
+
+.doc-type-add-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.doc-type-add-row button {
+  flex-shrink: 0;
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--panel-hover);
+  color: var(--text);
+  cursor: pointer;
+}
+
+.doc-type-add-row button:hover {
+  border-color: var(--accent);
+}
+
+.doc-type-summary {
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+
 @keyframes spin {
   from { transform: rotate(0deg); }
   to   { transform: rotate(360deg); }

@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { PRESET_DOC_TYPES } from "@/lib/kb";
 
 type Mode = "file" | "url" | "text";
 type FileStatus = "pending" | "uploading" | "success" | "dup" | "error";
@@ -184,19 +185,32 @@ export default function IngestPage() {
             aria-label="知识库分区"
           />
         </div>
-        <div>
-          <div className="field-label">doc_type</div>
-          <select
+        <div className="doc-type-panel" style={{ marginTop: 0 }}>
+          <div className="doc-type-panel-title">文档类型 doc_type</div>
+          <div className="doc-type-panel-sub">快捷</div>
+          <div className="doc-type-toolbar" style={{ marginBottom: 8 }}>
+            {PRESET_DOC_TYPES.map((t) => (
+              <button
+                key={t}
+                type="button"
+                className={`doc-type-chip${docType.trim().toLowerCase() === t ? " on" : ""}`}
+                onClick={() => setDocType(t)}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+          <div className="doc-type-panel-sub">自定义 slug</div>
+          <input
             className="text-input"
             value={docType}
             onChange={(e) => setDocType(e.target.value)}
+            placeholder="如 general、release-notes、my-wiki"
             aria-label="文档类型"
-          >
-            <option value="general">general（其他）</option>
-            <option value="tutorial">tutorial（教程）</option>
-            <option value="api">api（接口说明）</option>
-            <option value="requirements">requirements（需求）</option>
-          </select>
+          />
+          <div className="field-label" style={{ marginTop: 6, color: "var(--text-dim)" }}>
+            保存为 1–32 位小写 [a-z0-9_-]；空格等会转为连字符（与后端一致）
+          </div>
         </div>
       </div>
 

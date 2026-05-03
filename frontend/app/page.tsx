@@ -5,6 +5,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Prism as SyntaxHighlighter } from "react-syntax-highlighter";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
+import { PRESET_DOC_TYPES, slugDocType } from "@/lib/kb";
 import { consumeSse } from "@/lib/sse";
 
 type Source = {
@@ -47,6 +48,31 @@ type Session = { id: string; label: string };
 const SESSION_KEY = (userId: string) => `rag_sessions_${userId}`;
 const USER_ID_KEY = "rag_user_id";
 const KB_COLLECTION_KEY = "rag_kb_collection";
+const DOC_TYPES_KEY = (uid: string) => `rag_doc_types_${uid}`;
+
+function loadDocTypesForUser(uid: string): string[] {
+  try {
+    const raw = localStorage.getItem(DOC_TYPES_KEY(uid));
+    if (!raw) return [];
+    const p = JSON.parse(raw) as unknown;
+    if (!Array.isArray(p)) return [];
+    const out: string[] = [];
+    for (const x of p) {
+      if (typeof x !== "string") continue;
+      const s = slugDocType(x);
+      if (s && !out.includes(s)) out.push(s);
+    }
+    return out.slice(0, 8);
+  } catch {
+    return [];
+  }
+}
+
+function saveDocTypesForUser(uid: string, types: string[]) {
+  try {
+    localStorage.setItem(DOC_TYPES_KEY(uid), JSON.stringify(types.slice(0, 8)));
+  } catch {}
+}
 
 function loadKbCollection(): string {
   try {
@@ -111,9 +137,9 @@ export default function HomePage() {
   const [editLabel, setEditLabel] = useState("");
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [kbCollection, setKbCollection] = useState(loadKbCollection);
-  const [ftTutorial, setFtTutorial] = useState(false);
-  const [ftApi, setFtApi] = useState(false);
-  const [ftReq, setFtReq] = useState(false);
+  const [activeDocTypes, setActiveDocTypes] = useState<string[]>([]);
+  const [customTypeDraft, setCustomTypeDraft] = useState("");
+  const [purgingSessions, setPurgingSessions] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
@@ -130,6 +156,10 @@ export default function HomePage() {
         saveSessions(userId, merged);
       }
     });
+  }, [userId]);
+
+  useEffect(() => {
+    setActiveDocTypes(loadDocTypesForUser(userId));
   }, [userId]);
 
   const syncSessionsFromServer = async (uid: string, existing: Session[]): Promise<Session[]> => {
@@ -259,6 +289,63 @@ export default function HomePage() {
     } catch {}
   };
 
+  const purgeAllSessions = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (sessions.length === 0) return;
+    if (!window.confirm(`将删除全部 ${sessions.length} 个会话（含服务器上的消息），不可恢复。确定？`)) return;
+    setPurgingSessions(true);
+    try {
+      for (const s of sessions) {
+        try {
+          await fetch(`/api/sessions/${s.id}`, { method: "DELETE" });
+        } catch {
+          /* ignore */
+        }
+      }
+      setSessions([]);
+      saveSessions(userId, []);
+      setCurrentSession(null);
+      setMessages([]);
+      setDeletingId(null);
+      setEditingId(null);
+    } finally {
+      setPurgingSessions(false);
+    }
+  };
+
+  const toggleDocTypeFilter = (slug: string) => {
+    setActiveDocTypes((prev) => {
+      const next = prev.includes(slug) ? prev.filter((t) => t !== slug) : [...prev, slug].slice(0, 8);
+      saveDocTypesForUser(userId, next);
+      return next;
+    });
+  };
+
+  const addCustomDocTypeFilter = () => {
+    const t = slugDocType(customTypeDraft);
+    if (!t) {
+      window.alert(
+        "无法解析为合法类型：1–32 位小写字母、数字、下划线、连字符（空格会变为连字符）；纯中文等符号需先转成英文标识。"
+      );
+      return;
+    }
+    setActiveDocTypes((prev) => {
+      if (prev.includes(t)) return prev;
+      const next = [...prev, t].slice(0, 8);
+      saveDocTypesForUser(userId, next);
+      return next;
+    });
+    setCustomTypeDraft("");
+  };
+
+  const removeDocTypeFilter = (slug: string) => {
+    setActiveDocTypes((prev) => {
+      const next = prev.filter((x) => x !== slug);
+      saveDocTypesForUser(userId, next);
+      return next;
+    });
+  };
+
   const deleteSession = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     if (deletingId === id) {
@@ -353,11 +440,11 @@ export default function HomePage() {
     const payload: Record<string, unknown> = { user_id: userId, message: text, top_k: 8 };
     if (currentSession) payload.session_id = currentSession;
     if (kbCollection.trim()) payload.kb_collection = kbCollection.trim();
-    const dts: string[] = [];
-    if (ftTutorial) dts.push("tutorial");
-    if (ftApi) dts.push("api");
-    if (ftReq) dts.push("requirements");
-    if (dts.length > 0) payload.doc_types = dts;
+    const docTypesPayload = activeDocTypes
+      .map((x) => slugDocType(x))
+      .filter((x): x is string => !!x)
+      .filter((x, i, a) => a.indexOf(x) === i);
+    if (docTypesPayload.length > 0) payload.doc_types = docTypesPayload;
 
     const endpoint = agentMode ? "/api/chat/agent/stream" : "/api/chat/stream";
     const controller = new AbortController();
@@ -486,16 +573,28 @@ export default function HomePage() {
         </div>
 
         <div className="sidebar-body">
-          <div className="sidebar-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: 10 }}>
+          <div className="sidebar-section-label" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", paddingRight: 6, gap: 4 }}>
             <span>会话</span>
-            <button
-              onClick={syncNow}
-              disabled={syncing}
-              title="从服务器同步历史会话"
-              className={`sync-btn${syncing ? " spinning" : ""}`}
-            >
-              ↻
-            </button>
+            <div className="session-toolbar-row" onClick={(e) => e.stopPropagation()}>
+              <button
+                type="button"
+                className="purge-sessions-btn"
+                disabled={purgingSessions || sessions.length === 0}
+                title="一键删除全部会话（含服务器记录）"
+                onClick={(e) => void purgeAllSessions(e)}
+              >
+                {purgingSessions ? "…" : "清空"}
+              </button>
+              <button
+                type="button"
+                onClick={() => void syncNow()}
+                disabled={syncing}
+                title="从服务器同步历史会话"
+                className={`sync-btn${syncing ? " spinning" : ""}`}
+              >
+                ↻
+              </button>
+            </div>
           </div>
           <div
             className={`sidebar-session ${!currentSession ? "active" : ""}`}
@@ -569,11 +668,70 @@ export default function HomePage() {
               saveKbCollection(e.target.value);
             }}
           />
-          <div className="field-label" style={{ marginBottom: 4, marginTop: 10 }}>检索文档类型（可多选，不选则不过滤）</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 8, fontSize: 12 }}>
-            <label><input type="checkbox" checked={ftTutorial} onChange={(e) => setFtTutorial(e.target.checked)} /> tutorial</label>
-            <label><input type="checkbox" checked={ftApi} onChange={(e) => setFtApi(e.target.checked)} /> api</label>
-            <label><input type="checkbox" checked={ftReq} onChange={(e) => setFtReq(e.target.checked)} /> requirements</label>
+          <div className="doc-type-panel">
+            <div className="doc-type-panel-title">检索文档类型</div>
+            <div className="doc-type-pill-strip" aria-live="polite">
+              {activeDocTypes.length === 0 ? (
+                <span className="doc-type-pill-empty">当前不限定类型（检索全部 doc_type）</span>
+              ) : (
+                activeDocTypes.map((t) => (
+                  <button
+                    key={t}
+                    type="button"
+                    className="doc-type-pill"
+                    title={`点击移除「${t}」`}
+                    onClick={() => removeDocTypeFilter(t)}
+                  >
+                    <span>{t}</span>
+                    <span className="doc-type-pill-x" aria-hidden>
+                      ×
+                    </span>
+                  </button>
+                ))
+              )}
+            </div>
+            <div className="doc-type-panel-sub">快捷</div>
+            <div className="doc-type-toolbar">
+              {PRESET_DOC_TYPES.map((t) => (
+                <button
+                  key={t}
+                  type="button"
+                  className={`doc-type-chip${activeDocTypes.includes(t) ? " on" : ""}`}
+                  onClick={() => toggleDocTypeFilter(t)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            <div className="doc-type-panel-sub">自定义</div>
+            <div className="doc-type-add-row">
+              <input
+                className="userid-input"
+                placeholder="输入后添加，如 release-notes"
+                value={customTypeDraft}
+                onChange={(e) => setCustomTypeDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    addCustomDocTypeFilter();
+                  }
+                }}
+                aria-label="自定义文档类型"
+              />
+              <button type="button" onClick={() => addCustomDocTypeFilter()}>
+                添加
+              </button>
+            </div>
+            <button
+              type="button"
+              className="doc-type-clear-all"
+              onClick={() => {
+                setActiveDocTypes([]);
+                saveDocTypesForUser(userId, []);
+              }}
+            >
+              清空全部类型条件
+            </button>
           </div>
           <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
             <a href="/ingest" className="btn" style={{ width: "100%", justifyContent: "center" }}>📄 文档入库</a>

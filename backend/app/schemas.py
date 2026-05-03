@@ -3,9 +3,7 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field, field_validator
 
-from app.kb import validate_kb_collection_optional
-
-DocType = Literal["tutorial", "api", "requirements", "general"]
+from app.kb import normalize_doc_type, validate_kb_collection_optional
 
 
 class HealthResponse(BaseModel):
@@ -25,7 +23,7 @@ class ChatStreamRequest(BaseModel):
     message: str
     top_k: int | None = None
     kb_collection: str | None = Field(default=None, max_length=64)
-    doc_types: list[DocType] | None = None
+    doc_types: list[str] | None = None
 
     @field_validator("kb_collection", mode="before")
     @classmethod
@@ -38,18 +36,23 @@ class ChatStreamRequest(BaseModel):
 
     @field_validator("doc_types", mode="before")
     @classmethod
-    def _v_doc_types(cls, v: object) -> list[DocType] | None:
+    def _v_doc_types(cls, v: object) -> list[str] | None:
         if v is None:
             return None
         if isinstance(v, list) and len(v) == 0:
             return None
         if not isinstance(v, list):
             return None
-        out: list[DocType] = []
-        allowed = {"tutorial", "api", "requirements", "general"}
+        out: list[str] = []
         for x in v[:8]:
-            if isinstance(x, str) and x in allowed and x not in out:
-                out.append(x)  # type: ignore[arg-type]
+            if not isinstance(x, str) or not x.strip():
+                continue
+            try:
+                n = normalize_doc_type(x)
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+            if n not in out:
+                out.append(n)
         return out or None
 
 
@@ -60,7 +63,7 @@ class AgentChatRequest(BaseModel):
     message: str
     top_k: int | None = None
     kb_collection: str | None = Field(default=None, max_length=64)
-    doc_types: list[DocType] | None = None
+    doc_types: list[str] | None = None
 
     @field_validator("kb_collection", mode="before")
     @classmethod
@@ -73,18 +76,23 @@ class AgentChatRequest(BaseModel):
 
     @field_validator("doc_types", mode="before")
     @classmethod
-    def _v_doc_types_agent(cls, v: object) -> list[DocType] | None:
+    def _v_doc_types_agent(cls, v: object) -> list[str] | None:
         if v is None:
             return None
         if isinstance(v, list) and len(v) == 0:
             return None
         if not isinstance(v, list):
             return None
-        out: list[DocType] = []
-        allowed = {"tutorial", "api", "requirements", "general"}
+        out: list[str] = []
         for x in v[:8]:
-            if isinstance(x, str) and x in allowed and x not in out:
-                out.append(x)  # type: ignore[arg-type]
+            if not isinstance(x, str) or not x.strip():
+                continue
+            try:
+                n = normalize_doc_type(x)
+            except ValueError as e:
+                raise ValueError(str(e)) from e
+            if n not in out:
+                out.append(n)
         return out or None
 
 

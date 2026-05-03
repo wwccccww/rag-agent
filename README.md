@@ -58,8 +58,8 @@ npm run dev
 | ---------------------------- | ------------------------------------------------------------------------- |
 | `GET /v1/health`             | DB / pgvector / Ollama / 模型探测                                             |
 | `GET /v1/metrics`            | 进程内性能指标快照（TTFT / p50/p95 / tok/s 等）                                       |
-| `POST /v1/ingest`            | 文件上传（`.txt/.md/.pdf`）、URL 抓取、纯文本入库；Form 可选 `kb_collection`、`doc_type`（`tutorial`/`api`/`requirements`/`general`） |
-| `POST /v1/chat/stream`       | SSE 流式对话；JSON 可选 `kb_collection`、`doc_types`（数组，限定检索文档类型）                         |
+| `POST /v1/ingest`            | 文件上传（`.txt/.md/.pdf`）、URL 抓取、纯文本入库；Form 可选 `kb_collection`、`doc_type`（**自定义**：`1–32` 位小写 `[a-z0-9_-]`，空格等会规范为连字符；常见预设 `tutorial`/`api`/`requirements`/`general`） |
+| `POST /v1/chat/stream`       | SSE 流式对话；JSON 可选 `kb_collection`、`doc_types`（字符串数组，最多 8 个，规则同 `doc_type`）                         |
 | `POST /v1/chat/agent/stream` | **Agent 模式**；知识库检索范围由请求的 `kb_collection`/`doc_types` 固定，工具仅传 `query`            |
 | `GET /v1/documents`          | 文档列表；可选查询参数 `kb_collection`、`doc_type` 筛选                                       |
 | `PATCH /v1/documents/{id}`   | 入库后修改该文档的 `kb_collection` 与/或 `doc_type`（JSON 至少其一）；同步各 chunk 的 `meta`；若目标分区已有相同 `content_sha256` 则 **409** |
@@ -79,7 +79,7 @@ npm run dev
 
 ### 0. Tool Calling Agent（核心亮点）
 
-对话界面 topbar 有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
+对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」为**暗色面板**：上方 **动态标签条**（可点 × 移除），下方「快捷」四预设 +「自定义」输入，可多选并与 `user_id` 一并写入 `localStorage`。文档列表页的类型筛选为**圆角芯片单选**（无浏览器原生 datalist 白底弹层）。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：
 
 ```
 用户消息
@@ -164,7 +164,7 @@ python test_hybrid_search.py "/user PUT"
 ### 1.1 知识库分区（`kb_collection`）与文档类型（`doc_type`）
 
 - **`kb_collection`**：硬分区，检索与列表只在该分区内进行；未传请求字段时使用环境变量 `DEFAULT_KB_COLLECTION`（默认 `default`）。分区名仅允许 `a-zA-Z0-9_-`，长度 1–64。同一文件内容可在不同分区各入库一份（去重键为「内容 SHA256 + 分区」）。
-- **`doc_type`**：文档级类型，入库时写入；对话请求可传 `doc_types` 数组，仅检索所列类型（不传则不过滤）。合法值：`tutorial`、`api`、`requirements`、`general`。
+- **`doc_type` / `doc_types`**：文档级类型标签，入库时写入 `Document.doc_type`；对话请求可传 `doc_types` 数组（最多 8 个），仅检索所列类型（不传则不过滤）。**不限于四个预设**：任意符合 `^[a-z0-9_-]{1,32}$` 的 slug 均可（提交前会转小写并将空白转为连字符）；纯符号/中文等无法得到合法 slug 时接口返回 **400**。检索过滤列表中的非法项会被静默忽略。
 - **入库后改分区/类型**：无需重新向量化。调用 `PATCH /v1/documents/{id}` 或 `PATCH /v1/documents/batch` 更新 `Document` 行并同步各 chunk 的 `meta` 中的 `kb_collection`/`doc_type`。若将文档移入某分区而该分区已存在**相同内容 SHA** 的另一文档，返回 **409**（与入库去重 `(sha256, kb_collection)` 一致）。
 
 **测试步骤：**
@@ -172,7 +172,7 @@ python test_hybrid_search.py "/user PUT"
 1. 重启后端，确认日志出现 `documents.kb_collection / doc_type columns ready`（旧库自动迁移）。
 2. 在入库页将 `kb_collection` 设为 `rag_demo`，`doc_type` 选 `tutorial`，上传一段纯 RAG 介绍文本；再将 `kb_collection` 改为 `api_demo`，`doc_type` 选 `api`，上传另一段接口说明。
 3. 打开文档列表页，分别用筛选 `kb_collection=rag_demo` / `api_demo` 确认列表互不交叉。
-4. 在对话页侧栏 `kb_collection` 填 `rag_demo`，勾选仅 `tutorial`，提问与教程相关的问题，引用中不应出现 `api_demo` 分区下的接口文档。
+4. 在对话页侧栏 `kb_collection` 填 `rag_demo`，在「检索文档类型」中点选 `tutorial`（或输入自定义 slug 后添加），提问与教程相关的问题，引用中不应出现 `api_demo` 分区下的接口文档。
 5. **批量改元数据**：在文档列表页勾选若干文档，填写目标分区与/或类型后点「批量应用」；或直接用 curl：`PATCH /v1/documents/batch`，JSON 示例：`{"document_ids":["<uuid1>","<uuid2>"],"kb_collection":"moved_demo","doc_type":"general"}`。
 
 **预期输出：** 步骤 4 的 `sources` 事件里 `snippet` 来源均为 `rag_demo` 且文档类型为教程；若去掉类型勾选并仍选 `rag_demo`，行为与「仅分区、不按类型过滤」一致。步骤 5 成功后接口返回 `{"ok":true,"updated":N,...}`，刷新列表后所选文档的 badge 与筛选结果与目标分区/类型一致；若目标分区已有同内容文档则响应 **409** 且列表不变。
