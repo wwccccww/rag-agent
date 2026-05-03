@@ -19,7 +19,7 @@ def create_memory(body: MemoryCreate) -> dict:
     db = SessionLocal()
     client = OllamaClient()
     try:
-        emb = client.embed(body.content[:8000])
+        emb = client.embed(body.content[:8000], apply_embed_budget=False)
         m = Memory(user_id=body.user_id, kind=body.kind, content=body.content.strip(), embedding=emb)
         db.add(m)
         db.commit()
@@ -99,7 +99,7 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
         if not isinstance(c, str) or not c.strip():
             return None
         content = c.strip()[:2000]
-        emb = client.embed(content[:8000])
+        emb = client.embed(content[:8000], apply_embed_budget=False)
 
         # ── 去重合并：余弦距离 < 0.15（相似度 > 0.85）则更新已有记忆 ──
         dist_expr = Memory.embedding.cosine_distance(emb)

@@ -157,7 +157,7 @@ def ingest_bytes(
 
     n = 0
     for content, meta in pairs:
-        emb = ollama.embed(content[:8000])
+        emb = ollama.embed(content[:8000], apply_embed_budget=False)
         meta_out = dict(meta) if isinstance(meta, dict) else {}
         meta_out["doc_type"] = dtype
         meta_out["kb_collection"] = coll

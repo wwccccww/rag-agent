@@ -54,7 +54,11 @@ class OllamaClient:
         r.raise_for_status()
         return r.json()
 
-    def embed(self, text: str) -> list[float]:
+    def embed(self, text: str, *, apply_embed_budget: bool = True) -> list[float]:
+        """向量化。默认对单次请求施加 `ollama_embed_budget_ms` 读超时（供 RAG 检索快速失败并降级）。
+
+        入库、写记忆等路径应传 `apply_embed_budget=False`，使用客户端默认长超时（避免大块/冷启动被 1.2s 误杀）。
+        """
         key = _embed_cache_key(settings.ollama_embed_model, text)
         cached = _cache_get(key)
         if cached is not None:
@@ -64,8 +68,12 @@ class OllamaClient:
         telemetry.inc("embed_cache_misses")
 
         t0 = time.perf_counter()
-        budget_ms = int(getattr(settings, "ollama_embed_budget_ms", 0) or 0)
-        timeout = (budget_ms / 1000) if budget_ms > 0 else None
+        timeout: float | None = None
+        budget_ms = 0
+        if apply_embed_budget:
+            budget_ms = int(getattr(settings, "ollama_embed_budget_ms", 0) or 0)
+            if budget_ms > 0:
+                timeout = budget_ms / 1000
         try:
             r = self._client.post(
                 f"{self.base}/api/embeddings",
@@ -76,7 +84,12 @@ class OllamaClient:
             telemetry.inc("embed_timeouts")
             elapsed = (time.perf_counter() - t0) * 1000
             telemetry.record_embed(elapsed)
-            logging.info("[Ollama] embed timed out (budget=%sms, %.0f chars)", budget_ms, len(text))
+            logging.info(
+                "[Ollama] embed timed out (apply_budget=%s budget_ms=%s, %.0f chars)",
+                apply_embed_budget,
+                budget_ms or "client-default",
+                len(text),
+            )
             raise RuntimeError(f"embedding timeout: {e}") from e
         r.raise_for_status()
         data = r.json()
