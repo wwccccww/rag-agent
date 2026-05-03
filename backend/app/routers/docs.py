@@ -1,14 +1,85 @@
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 from sqlalchemy import func, select
+from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.kb import normalize_doc_type, resolve_kb_collection
+from app.kb import normalize_doc_type, resolve_kb_collection, validate_kb_collection_optional
 from app.models import Chunk, Document
 
 router = APIRouter(prefix="/v1", tags=["documents"])
+
+_BATCH_MAX = 100
+
+
+def _normalize_meta_patch_dict(data: object) -> object:
+    if not isinstance(data, dict):
+        return data
+    out = dict(data)
+    for k in ("kb_collection", "doc_type"):
+        if k in out and isinstance(out[k], str):
+            s = out[k].strip()
+            out[k] = s if s else None
+    return out
+
+
+def _sync_chunks_meta(db: Session, doc_id: UUID, kb_collection: str, doc_type: str) -> None:
+    """与 Document 对齐，避免 chunk.meta 与文档表长期不一致。"""
+    for ch in db.execute(select(Chunk).where(Chunk.document_id == doc_id)).scalars():
+        m = dict(ch.meta or {})
+        m["kb_collection"] = kb_collection
+        m["doc_type"] = doc_type
+        ch.meta = m
+
+
+def _conflict_same_sha_in_collection(
+    db: Session, *, content_sha256: str, kb_collection: str, exclude_id: UUID
+) -> bool:
+    row = db.execute(
+        select(Document.id).where(
+            Document.content_sha256 == content_sha256,
+            Document.kb_collection == kb_collection,
+            Document.id != exclude_id,
+        )
+    ).scalar_one_or_none()
+    return row is not None
+
+
+class DocumentMetaPatchBody(BaseModel):
+    """至少提供一个非空字段；未提供的字段保持原值。"""
+
+    kb_collection: str | None = None
+    doc_type: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_blank(cls, data: object) -> object:
+        return _normalize_meta_patch_dict(data)
+
+    @model_validator(mode="after")
+    def _one_field(self) -> "DocumentMetaPatchBody":
+        if self.kb_collection is None and self.doc_type is None:
+            raise ValueError("至少提供 kb_collection 或 doc_type 之一")
+        return self
+
+
+class DocumentBatchMetaPatchBody(BaseModel):
+    document_ids: list[UUID] = Field(..., min_length=1, max_length=_BATCH_MAX)
+    kb_collection: str | None = None
+    doc_type: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_blank(cls, data: object) -> object:
+        return _normalize_meta_patch_dict(data)
+
+    @model_validator(mode="after")
+    def _one_field(self) -> "DocumentBatchMetaPatchBody":
+        if self.kb_collection is None and self.doc_type is None:
+            raise ValueError("至少提供 kb_collection 或 doc_type 之一")
+        return self
 
 
 class DocItem(BaseModel):
@@ -86,6 +157,87 @@ def list_chunks(doc_id: UUID, limit: int = Query(100, ge=1, le=500)) -> list[Chu
             ChunkItem(id=c.id, chunk_index=c.chunk_index, content=c.content, meta=c.meta or {})
             for c in rows
         ]
+    finally:
+        db.close()
+
+
+@router.patch("/documents/batch")
+def batch_patch_documents(body: DocumentBatchMetaPatchBody) -> dict:
+    """批量修改分区/类型，最多 100 条（与 _BATCH_MAX 一致）；同一事务内依次校验，任一条 409 则整批回滚。"""
+    uniq_ids = list(dict.fromkeys(body.document_ids))
+    db = SessionLocal()
+    try:
+        docs = db.execute(select(Document).where(Document.id.in_(uniq_ids))).scalars().all()
+        found = {d.id for d in docs}
+        missing = [str(i) for i in uniq_ids if i not in found]
+        if missing:
+            raise HTTPException(404, f"document not found: {', '.join(missing[:5])}")
+
+        doc_by_id = {d.id: d for d in docs}
+        meta_only = DocumentMetaPatchBody.model_validate(body.model_dump(exclude={"document_ids"}))
+        for uid in uniq_ids:
+            _patch_document_row(db, doc_by_id[uid], meta_only)
+
+        db.commit()
+        return {"ok": True, "updated": len(uniq_ids), "document_ids": [str(i) for i in uniq_ids]}
+    except HTTPException:
+        db.rollback()
+        raise
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def _patch_document_row(db: Session, doc: Document, body: DocumentMetaPatchBody) -> None:
+    try:
+        new_kb = (
+            validate_kb_collection_optional(body.kb_collection)
+            if body.kb_collection is not None
+            else doc.kb_collection
+        )
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+    new_dtype = normalize_doc_type(body.doc_type) if body.doc_type is not None else doc.doc_type
+
+    if new_kb != doc.kb_collection and _conflict_same_sha_in_collection(
+        db,
+        content_sha256=doc.content_sha256,
+        kb_collection=new_kb,
+        exclude_id=doc.id,
+    ):
+        raise HTTPException(
+            409,
+            "目标分区已存在相同内容（content_sha256）的文档，与入库去重规则冲突；请先删除目标分区中的重复文档或仅修改 doc_type",
+        )
+
+    doc.kb_collection = new_kb
+    doc.doc_type = new_dtype
+    _sync_chunks_meta(db, doc.id, new_kb, new_dtype)
+
+
+@router.patch("/documents/{doc_id}", response_model=DocItem)
+def patch_document(doc_id: UUID, body: DocumentMetaPatchBody) -> DocItem:
+    """入库后修改文档分区（kb_collection）与/或类型（doc_type）；检索以 Document 为准，并同步各 chunk 的 meta。"""
+    db = SessionLocal()
+    try:
+        doc = db.get(Document, doc_id)
+        if not doc:
+            raise HTTPException(404, "document not found")
+        _patch_document_row(db, doc, body)
+        db.commit()
+        db.refresh(doc)
+        cnt = db.execute(select(func.count(Chunk.id)).where(Chunk.document_id == doc.id)).scalar() or 0
+        return DocItem(
+            id=doc.id,
+            title=doc.title,
+            source=doc.source,
+            kb_collection=doc.kb_collection,
+            doc_type=doc.doc_type,
+            chunk_count=int(cnt),
+            created_at=doc.created_at.isoformat(),
+        )
     finally:
         db.close()
 

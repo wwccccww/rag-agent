@@ -62,6 +62,8 @@ npm run dev
 | `POST /v1/chat/stream`       | SSE 流式对话；JSON 可选 `kb_collection`、`doc_types`（数组，限定检索文档类型）                         |
 | `POST /v1/chat/agent/stream` | **Agent 模式**；知识库检索范围由请求的 `kb_collection`/`doc_types` 固定，工具仅传 `query`            |
 | `GET /v1/documents`          | 文档列表；可选查询参数 `kb_collection`、`doc_type` 筛选                                       |
+| `PATCH /v1/documents/{id}`   | 入库后修改该文档的 `kb_collection` 与/或 `doc_type`（JSON 至少其一）；同步各 chunk 的 `meta`；若目标分区已有相同 `content_sha256` 则 **409** |
+| `PATCH /v1/documents/batch`  | 同上批量，请求体 `document_ids`（≤100）+ 可选 `kb_collection` / `doc_type`（至少其一）；任一失败整批回滚                         |
 | `POST /v1/memory`            | 手动写入长期记忆（自动向量化）                                                           |
 | `GET /v1/memory?user_id=`    | 列出记忆                                                                      |
 | `DELETE /v1/memory/{id}`     | 删除记忆                                                                      |
@@ -163,6 +165,7 @@ python test_hybrid_search.py "/user PUT"
 
 - **`kb_collection`**：硬分区，检索与列表只在该分区内进行；未传请求字段时使用环境变量 `DEFAULT_KB_COLLECTION`（默认 `default`）。分区名仅允许 `a-zA-Z0-9_-`，长度 1–64。同一文件内容可在不同分区各入库一份（去重键为「内容 SHA256 + 分区」）。
 - **`doc_type`**：文档级类型，入库时写入；对话请求可传 `doc_types` 数组，仅检索所列类型（不传则不过滤）。合法值：`tutorial`、`api`、`requirements`、`general`。
+- **入库后改分区/类型**：无需重新向量化。调用 `PATCH /v1/documents/{id}` 或 `PATCH /v1/documents/batch` 更新 `Document` 行并同步各 chunk 的 `meta` 中的 `kb_collection`/`doc_type`。若将文档移入某分区而该分区已存在**相同内容 SHA** 的另一文档，返回 **409**（与入库去重 `(sha256, kb_collection)` 一致）。
 
 **测试步骤：**
 
@@ -170,8 +173,9 @@ python test_hybrid_search.py "/user PUT"
 2. 在入库页将 `kb_collection` 设为 `rag_demo`，`doc_type` 选 `tutorial`，上传一段纯 RAG 介绍文本；再将 `kb_collection` 改为 `api_demo`，`doc_type` 选 `api`，上传另一段接口说明。
 3. 打开文档列表页，分别用筛选 `kb_collection=rag_demo` / `api_demo` 确认列表互不交叉。
 4. 在对话页侧栏 `kb_collection` 填 `rag_demo`，勾选仅 `tutorial`，提问与教程相关的问题，引用中不应出现 `api_demo` 分区下的接口文档。
+5. **批量改元数据**：在文档列表页勾选若干文档，填写目标分区与/或类型后点「批量应用」；或直接用 curl：`PATCH /v1/documents/batch`，JSON 示例：`{"document_ids":["<uuid1>","<uuid2>"],"kb_collection":"moved_demo","doc_type":"general"}`。
 
-**预期输出：** 步骤 4 的 `sources` 事件里 `snippet` 来源均为 `rag_demo` 且文档类型为教程；若去掉类型勾选并仍选 `rag_demo`，行为与「仅分区、不按类型过滤」一致。
+**预期输出：** 步骤 4 的 `sources` 事件里 `snippet` 来源均为 `rag_demo` 且文档类型为教程；若去掉类型勾选并仍选 `rag_demo`，行为与「仅分区、不按类型过滤」一致。步骤 5 成功后接口返回 `{"ok":true,"updated":N,...}`，刷新列表后所选文档的 badge 与筛选结果与目标分区/类型一致；若目标分区已有同内容文档则响应 **409** 且列表不变。
 
 评测脚本可选：`python eval/eval_rag.py --kb-collection rag_demo --doc-types tutorial`；环境变量 `EVAL_KB_COLLECTION`、`EVAL_DOC_TYPES`（逗号分隔类型）同样生效。`python test_hybrid_search.py` 会读取上述环境变量。
 

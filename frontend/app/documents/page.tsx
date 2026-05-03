@@ -22,6 +22,10 @@ export default function DocumentsPage() {
   const [deleting, setDeleting] = useState<string | null>(null);
   const [kbFilter, setKbFilter] = useState("");
   const [docTypeFilter, setDocTypeFilter] = useState("");
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [batchKb, setBatchKb] = useState("");
+  const [batchDocType, setBatchDocType] = useState("");
+  const [batchSaving, setBatchSaving] = useState(false);
 
   useEffect(() => {
     try {
@@ -75,8 +79,61 @@ export default function DocumentsPage() {
     setDeleting(doc.id);
     await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
     if (selected?.id === doc.id) { setSelected(null); setChunks([]); }
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      n.delete(doc.id);
+      return n;
+    });
     await load();
     setDeleting(null);
+  };
+
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const n = new Set(prev);
+      if (checked) n.add(id);
+      else n.delete(id);
+      return n;
+    });
+  };
+
+  const applyBatchMeta = async () => {
+    if (selectedIds.size === 0) return;
+    const idsSnapshot = new Set(selectedIds);
+    const kb = batchKb.trim();
+    const dt = batchDocType.trim();
+    if (!kb && !dt) {
+      window.alert("请填写目标分区（kb_collection）或选择文档类型");
+      return;
+    }
+    const body: { document_ids: string[]; kb_collection?: string; doc_type?: string } = {
+      document_ids: [...idsSnapshot],
+    };
+    if (kb) body.kb_collection = kb;
+    if (dt) body.doc_type = dt;
+    setBatchSaving(true);
+    try {
+      const r = await fetch("/api/documents/batch", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      });
+      const text = await r.text();
+      if (!r.ok) {
+        window.alert(text.slice(0, 500) || `请求失败 (${r.status})`);
+        return;
+      }
+      if (selected && idsSnapshot.has(selected.id)) {
+        setSelected(null);
+        setChunks([]);
+      }
+      setSelectedIds(new Set());
+      await load();
+    } catch {
+      window.alert("网络错误");
+    } finally {
+      setBatchSaving(false);
+    }
   };
 
   return (
@@ -114,6 +171,59 @@ export default function DocumentsPage() {
             <option value="requirements">requirements</option>
             <option value="general">general</option>
           </select>
+          {selectedIds.size > 0 && (
+            <div
+              style={{
+                marginTop: 10,
+                padding: 10,
+                border: "1px solid var(--border)",
+                borderRadius: 8,
+                background: "var(--panel)",
+              }}
+            >
+              <div className="field-label" style={{ marginBottom: 6 }}>
+                已选 {selectedIds.size} 项 · 批量改分区 / 类型（无需重新入库）
+              </div>
+              <input
+                className="userid-input"
+                style={{ width: "100%", marginBottom: 6 }}
+                placeholder="目标 kb_collection（可空，与类型二选一）"
+                value={batchKb}
+                onChange={(e) => setBatchKb(e.target.value)}
+                aria-label="批量目标分区"
+              />
+              <select
+                className="userid-input"
+                style={{ width: "100%", marginBottom: 8 }}
+                value={batchDocType}
+                onChange={(e) => setBatchDocType(e.target.value)}
+                aria-label="批量目标文档类型"
+              >
+                <option value="">类型不改（仅当上面填了分区时）</option>
+                <option value="tutorial">tutorial</option>
+                <option value="api">api</option>
+                <option value="requirements">requirements</option>
+                <option value="general">general</option>
+              </select>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: "100%", justifyContent: "center" }}
+                disabled={batchSaving}
+                onClick={() => void applyBatchMeta()}
+              >
+                {batchSaving ? "提交中…" : "批量应用"}
+              </button>
+              <button
+                type="button"
+                className="btn"
+                style={{ width: "100%", justifyContent: "center", marginTop: 6, opacity: 0.85 }}
+                onClick={() => setSelectedIds(new Set())}
+              >
+                清除勾选
+              </button>
+            </div>
+          )}
         </div>
         <div className="sidebar-body">
           {loading && <div className="field-label" style={{ padding: "12px 10px" }}>加载中…</div>}
@@ -128,6 +238,13 @@ export default function DocumentsPage() {
               onClick={() => openDoc(doc)}
             >
               <div style={{ display: "flex", alignItems: "center", gap: 6, width: "100%" }}>
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(doc.id)}
+                  onChange={(e) => toggleSelect(doc.id, e.target.checked)}
+                  onClick={(e) => e.stopPropagation()}
+                  aria-label="勾选以批量修改分区或类型"
+                />
                 <span style={{ fontSize: 14 }}>📄</span>
                 <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", fontSize: 12, fontWeight: 600, color: "var(--text)" }}>
                   {doc.title ?? doc.source ?? "无标题"}
