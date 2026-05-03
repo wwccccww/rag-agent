@@ -148,6 +148,7 @@ def ingest_bytes(
         settings.chunk_overlap,
         filename=filename,
         markdown_by_heading=settings.chunk_markdown_by_heading,
+        markdown_fence_aware=settings.chunk_markdown_fence_aware,
     )
     # 过滤无实质内容的短片段
     pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]

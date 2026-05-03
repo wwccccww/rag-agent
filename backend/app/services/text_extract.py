@@ -95,6 +95,64 @@ def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str]:
 
 
 _MD_HEADING = re.compile(r"^#{1,6}\s+\S")
+_CLOSING_FENCE_RE = re.compile(r"^`{3,}\s*$")
+
+
+def _is_closing_fence_line(line: str) -> bool:
+    """围栏结束行：整行（去首尾空白）仅由至少 3 个 ` 与可选空白组成。"""
+    return bool(_CLOSING_FENCE_RE.match(line.strip()))
+
+
+def _iter_text_and_fence_spans(section: str) -> list[tuple[str, str]]:
+    """将一节正文拆成交替的 prose 与 fenced code（含首尾 ``` 行），围栏内原文不改。"""
+    lines = section.replace("\r\n", "\n").split("\n")
+    out: list[tuple[str, str]] = []
+    text_buf: list[str] = []
+    i = 0
+    n = len(lines)
+
+    def flush_text() -> None:
+        if not text_buf:
+            return
+        block = "\n".join(text_buf)
+        text_buf.clear()
+        if block.strip():
+            out.append(("text", block))
+
+    while i < n:
+        line = lines[i]
+        if line.strip().startswith("```"):
+            flush_text()
+            fence_lines = [line]
+            i += 1
+            while i < n:
+                fence_lines.append(lines[i])
+                if len(fence_lines) > 1 and _is_closing_fence_line(lines[i]):
+                    i += 1
+                    break
+                i += 1
+            joined = "\n".join(fence_lines)
+            if joined.strip():
+                out.append(("fence", joined))
+            continue
+        text_buf.append(line)
+        i += 1
+    flush_text()
+    return out
+
+
+def _section_to_mixed_units(section: str) -> list[tuple[str, str]]:
+    """text 单元按空行拆成段落；fence 单元整块保留。"""
+    units: list[tuple[str, str]] = []
+    for kind, block in _iter_text_and_fence_spans(section):
+        if kind == "text":
+            for p in block.split("\n\n"):
+                ps = p.strip()
+                if ps:
+                    units.append(("text", ps))
+        elif block.strip():
+            units.append(("fence", block))
+    return units
 
 
 def _looks_like_markdown(text: str, filename: str | None) -> bool:
@@ -117,12 +175,13 @@ def _split_oversized_paragraph(p: str, max_chars: int, overlap: int) -> list[str
     while start < n:
         end = min(start + max_chars, n)
         if end < n:
-            window = p[max(start, end - 140) : end]
+            ws = max(start, end - 140)
+            window = p[ws:end]
             cut = -1
             for sep in ("。\n", "。", "！\n", "！", "？\n", "？", ". ", ".\n", "\n\n", "\n", "；", "; "):
                 idx = window.rfind(sep)
                 if idx != -1:
-                    cut = max(start, start + (end - len(window)) + idx + len(sep))
+                    cut = ws + idx + len(sep)
                     break
             if cut > start:
                 end = cut
@@ -135,10 +194,82 @@ def _split_oversized_paragraph(p: str, max_chars: int, overlap: int) -> list[str
     return out
 
 
+def _split_oversized_fence(p: str, max_chars: int, _overlap: int) -> list[str]:
+    """超长围栏块仅在换行处切分，避免在代码/XML 行内硬截断。
+
+    子块之间**不使用**与正文相同的字符 _overlap：回退 overlap 容易落在行中，产生半截标签。
+    """
+    if len(p) <= max_chars:
+        return [p] if p.strip() else []
+    out: list[str] = []
+    start = 0
+    n = len(p)
+    while start < n:
+        end = min(start + max_chars, n)
+        if end < n:
+            ws = max(start, end - 400)
+            window = p[ws:end]
+            cut = window.rfind("\n")
+            if cut != -1:
+                end = ws + cut + 1
+            else:
+                segment = p[start:end]
+                cut2 = segment.rfind("\n")
+                if cut2 != -1:
+                    end = start + cut2 + 1
+        piece = p[start:end].strip()
+        if piece:
+            out.append(piece)
+        if end >= n:
+            break
+        start = end
+    return out
+
+
 def _pack_paragraphs(paragraphs: list[str], max_chars: int, overlap: int) -> list[str]:
     chunks: list[str] = []
     buf = ""
     for p in paragraphs:
+        if len(buf) + len(p) + 2 <= max_chars:
+            buf = f"{buf}\n\n{p}" if buf else p
+        else:
+            if buf:
+                chunks.append(buf)
+            if len(p) <= max_chars:
+                buf = p
+            else:
+                for piece in _split_oversized_paragraph(p, max_chars, overlap):
+                    chunks.append(piece)
+                buf = ""
+        while len(buf) > max_chars:
+            chunks.append(buf[:max_chars])
+            buf = buf[max_chars - overlap :]
+    if buf:
+        chunks.append(buf)
+    return [c.strip() for c in chunks if c.strip()]
+
+
+def _pack_mixed_units(units: list[tuple[str, str]], max_chars: int, overlap: int) -> list[str]:
+    """在 text 单元上沿用段落合并与长段软切；fence 单元整块输出，超长时仅按换行切。"""
+    chunks: list[str] = []
+    buf = ""
+    for kind, p in units:
+        if kind == "fence":
+            if buf and len(buf) + len(p) + 2 <= max_chars:
+                buf = f"{buf}\n\n{p}"
+                while len(buf) > max_chars:
+                    chunks.append(buf[:max_chars])
+                    buf = buf[max_chars - overlap :]
+                continue
+            if buf:
+                chunks.append(buf)
+                buf = ""
+            if len(p) <= max_chars:
+                chunks.append(p)
+            else:
+                chunks.extend(_split_oversized_fence(p, max_chars, overlap))
+            continue
+        # text
         if len(buf) + len(p) + 2 <= max_chars:
             buf = f"{buf}\n\n{p}" if buf else p
         else:
@@ -188,26 +319,36 @@ def chunk_text(
     *,
     filename: str | None = None,
     markdown_by_heading: bool = True,
+    markdown_fence_aware: bool = True,
 ) -> list[tuple[str, dict]]:
     """
-    将全文切块。Markdown（.md 或含 ## 标题）在 markdown_by_heading 为 True 时先按标题分节，
-    再在节内按空行段落合并，长段按句号优先切分。
+    将全文切块。Markdown（.md 或含 ## 标题）在 markdown_by_heading 为 True 时先按标题分节；
+    markdown_fence_aware 且判定为 Markdown 时，节内识别 ``` 围栏，围栏内不按句号/短窗切分，
+    超长围栏仅在换行处切；否则节内仍按空行段落合并后切块。
     """
     text = text.strip()
     if not text:
         return []
 
-    if markdown_by_heading and _looks_like_markdown(text, filename):
+    use_md = markdown_by_heading and _looks_like_markdown(text, filename)
+    if use_md:
         raw_sections = _markdown_sections(text)
     else:
         raw_sections = [text]
 
     chunks: list[str] = []
     for sec in raw_sections:
-        paragraphs = [p.strip() for p in sec.split("\n\n") if p.strip()]
-        if not paragraphs:
-            paragraphs = [sec] if sec.strip() else []
-        chunks.extend(_pack_paragraphs(paragraphs, max_chars, overlap))
+        if use_md and markdown_fence_aware:
+            units = _section_to_mixed_units(sec)
+            if units:
+                chunks.extend(_pack_mixed_units(units, max_chars, overlap))
+            elif sec.strip():
+                chunks.extend(_pack_paragraphs([sec.strip()], max_chars, overlap))
+        else:
+            paragraphs = [p.strip() for p in sec.split("\n\n") if p.strip()]
+            if not paragraphs:
+                paragraphs = [sec] if sec.strip() else []
+            chunks.extend(_pack_paragraphs(paragraphs, max_chars, overlap))
 
     out: list[tuple[str, dict]] = []
     for idx, c in enumerate(chunks):
