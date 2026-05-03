@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     chunk_markdown_by_heading: bool = True
     # Markdown 节内：识别 ``` 围栏代码块，整块不切；超长围栏仅在换行处切分（避免 XML/代码拦腰断）
     chunk_markdown_fence_aware: bool = True
+    # 紧邻围栏前的纯文字若不超过此长度（且不含围栏），与围栏合并为一个切块，避免「例如：」单独成块检索不到代码
+    chunk_merge_intro_before_fence_max_chars: int = 320
     # 会话消息超过此数量时触发自动摘要（每 10 条触发一次）
     summary_threshold: int = 20
     # 混合检索：向量权重 vs 三元组文本权重（RRF 已自动平衡，此参数保留供将来调参）

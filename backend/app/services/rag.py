@@ -149,6 +149,7 @@ def ingest_bytes(
         filename=filename,
         markdown_by_heading=settings.chunk_markdown_by_heading,
         markdown_fence_aware=settings.chunk_markdown_fence_aware,
+        merge_intro_before_fence_max_chars=settings.chunk_merge_intro_before_fence_max_chars,
     )
     # 过滤无实质内容的短片段
     pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
@@ -321,6 +322,11 @@ def search_chunks(
         t = trgm_similarity.get(cid)
         # 展示分数：优先展示向量相似度；若该片段主要由文本检索命中，则展示 word_similarity
         display_score = v if v is not None else (t if t is not None else 0.0)
+        sec_h = None
+        if isinstance(ch.meta, dict):
+            raw_h = ch.meta.get("section_heading")
+            if isinstance(raw_h, str) and raw_h.strip():
+                sec_h = raw_h.strip()[:200]
         out.append(
             {
                 "chunk_id": ch.id,
@@ -328,6 +334,7 @@ def search_chunks(
                 "kb_collection": doc.kb_collection,
                 "doc_type": doc.doc_type,
                 "page": page,
+                "section_heading": sec_h,
                 "score": display_score,
                 # 额外返回调试字段（前端当前未展示）
                 "vec_score": v,

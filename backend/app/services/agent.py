@@ -210,10 +210,11 @@ def _execute_tool(
         results = multi_query_search(db, ollama, query, top_k, kb_collection, doc_types)
         if not results:
             return "知识库中未找到与该查询相关的内容。", []
-        parts = [
-            f"[S{i}] 来源：{r['source']}\n{r['full_content']}"
-            for i, r in enumerate(results, 1)
-        ]
+        parts = []
+        for i, r in enumerate(results, 1):
+            sec = r.get("section_heading")
+            sec_line = f" · 节：{sec}" if isinstance(sec, str) and sec.strip() else ""
+            parts.append(f"[S{i}] 来源：{r['source']}{sec_line}\n{r['full_content']}")
         return "\n\n".join(parts), results
 
     if tool_name == "recall_user_memory":

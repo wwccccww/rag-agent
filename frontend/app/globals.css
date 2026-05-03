@@ -737,6 +737,13 @@ a:hover { text-decoration: underline; }
   color: var(--text-muted);
 }
 
+.source-card-section {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  line-height: 1.35;
+}
+
 .source-card-snippet {
   font-size: 12px;
   color: var(--text-muted);

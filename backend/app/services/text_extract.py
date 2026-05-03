@@ -155,6 +155,55 @@ def _section_to_mixed_units(section: str) -> list[tuple[str, str]]:
     return units
 
 
+def _first_heading_in_section(section: str) -> str | None:
+    """节内第一个 Markdown 标题行（去掉 #），供纯代码块 meta 回落。"""
+    for line in section.replace("\r\n", "\n").split("\n")[:48]:
+        st = line.strip()
+        if _MD_HEADING.match(st):
+            return st.lstrip("#").strip()[:160]
+    return None
+
+
+def _merge_short_intro_before_fence_units(
+    units: list[tuple[str, str]], max_intro: int
+) -> list[tuple[str, str]]:
+    """将「连续短正文 + 紧随的围栏」合并为一个 fence 单元（多段 text 会先拼成引言，再与 ``` 块合并）。"""
+    if max_intro <= 0 or len(units) < 2:
+        return units
+    out: list[tuple[str, str]] = []
+    i = 0
+    while i < len(units):
+        if units[i][0] == "text":
+            j = i
+            texts: list[str] = []
+            while j < len(units) and units[j][0] == "text":
+                texts.append(units[j][1].strip())
+                j += 1
+            if j < len(units) and units[j][0] == "fence":
+                intro = "\n\n".join(t for t in texts if t)
+                fence = units[j][1].strip()
+                if intro and "```" not in intro and len(intro) <= max_intro:
+                    out.append(("fence", intro + "\n\n" + fence))
+                    i = j + 1
+                    continue
+            for t in texts:
+                if t:
+                    out.append(("text", t))
+            i = j
+            continue
+        out.append(units[i])
+        i += 1
+    return out
+
+
+def _heading_from_chunk_start(content: str, max_lines: int = 8) -> str | None:
+    for ln in content.split("\n")[:max_lines]:
+        st = ln.strip()
+        if _MD_HEADING.match(st):
+            return st.lstrip("#").strip()[:120]
+    return None
+
+
 def _looks_like_markdown(text: str, filename: str | None) -> bool:
     fn = (filename or "").lower()
     if fn.endswith(".md"):
@@ -320,11 +369,13 @@ def chunk_text(
     filename: str | None = None,
     markdown_by_heading: bool = True,
     markdown_fence_aware: bool = True,
+    merge_intro_before_fence_max_chars: int = 320,
 ) -> list[tuple[str, dict]]:
     """
     将全文切块。Markdown（.md 或含 ## 标题）在 markdown_by_heading 为 True 时先按标题分节；
     markdown_fence_aware 且判定为 Markdown 时，节内识别 ``` 围栏，围栏内不按句号/短窗切分，
-    超长围栏仅在换行处切；否则节内仍按空行段落合并后切块。
+    超长围栏仅在换行处切；可选将不超过 merge_intro_before_fence_max_chars 的紧邻引言并入围栏单元，
+    避免「例如：」单独成块。每节首标题写入 meta.section_heading（纯代码块用节标题回落）。
     """
     text = text.strip()
     if not text:
@@ -336,22 +387,28 @@ def chunk_text(
     else:
         raw_sections = [text]
 
-    chunks: list[str] = []
+    pieces: list[tuple[str, str | None]] = []
     for sec in raw_sections:
+        sec_heading = _first_heading_in_section(sec)
         if use_md and markdown_fence_aware:
             units = _section_to_mixed_units(sec)
+            if merge_intro_before_fence_max_chars > 0:
+                units = _merge_short_intro_before_fence_units(units, merge_intro_before_fence_max_chars)
             if units:
-                chunks.extend(_pack_mixed_units(units, max_chars, overlap))
+                for c in _pack_mixed_units(units, max_chars, overlap):
+                    pieces.append((c, sec_heading))
             elif sec.strip():
-                chunks.extend(_pack_paragraphs([sec.strip()], max_chars, overlap))
+                for c in _pack_paragraphs([sec.strip()], max_chars, overlap):
+                    pieces.append((c, sec_heading))
         else:
             paragraphs = [p.strip() for p in sec.split("\n\n") if p.strip()]
             if not paragraphs:
                 paragraphs = [sec] if sec.strip() else []
-            chunks.extend(_pack_paragraphs(paragraphs, max_chars, overlap))
+            for c in _pack_paragraphs(paragraphs, max_chars, overlap):
+                pieces.append((c, sec_heading))
 
     out: list[tuple[str, dict]] = []
-    for idx, c in enumerate(chunks):
+    for idx, (c, sec_fallback) in enumerate(pieces):
         page = None
         if "--- Page " in c:
             try:
@@ -361,14 +418,10 @@ def chunk_text(
                     page = int(num)
             except (ValueError, IndexError):
                 page = None
-        heading = None
-        for ln in c.split("\n")[:3]:
-            s = ln.strip()
-            if _MD_HEADING.match(s):
-                heading = s.lstrip("#").strip()[:120]
-                break
+        fb = sec_fallback.strip()[:200] if sec_fallback and sec_fallback.strip() else None
+        h = _heading_from_chunk_start(c) or fb
         meta: dict = {"chunk_index": idx, "page": page}
-        if heading:
-            meta["section_heading"] = heading
+        if h:
+            meta["section_heading"] = h[:200]
         out.append((c.strip(), meta))
     return out

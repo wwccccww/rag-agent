@@ -37,8 +37,10 @@ def _build_system_prompt(
         src = s.get("source") or "unknown"
         page = s.get("page")
         pg = f" p.{page}" if page else ""
+        sec = s.get("section_heading")
+        sec_part = f" · 节：{sec}" if isinstance(sec, str) and sec.strip() else ""
         body = s.get("full_content", s.get("snippet", ""))
-        rag_lines.append(f"[S{i}] ({src}{pg})\n{body}")
+        rag_lines.append(f"[S{i}] ({src}{pg}{sec_part})\n{body}")
 
     rag_block = "\n\n".join(rag_lines) if rag_lines else "(无检索片段)"
     mem_block = "\n".join(memory_lines) if memory_lines else "(无长期记忆)"
@@ -196,6 +198,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                     "chunk_id": str(s["chunk_id"]),
                     "source": s.get("source"),
                     "page": s.get("page"),
+                    "section_heading": s.get("section_heading"),
                     "score": s.get("score"),
                     "snippet": s.get("snippet"),
                 }
@@ -348,6 +351,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                     "chunk_id": str(s["chunk_id"]),
                     "source": s.get("source"),
                     "page": s.get("page"),
+                    "section_heading": s.get("section_heading"),
                     "score": s.get("score"),
                     "snippet": s.get("snippet"),
                 }

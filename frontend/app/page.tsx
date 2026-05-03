@@ -20,6 +20,7 @@ type Source = {
   chunk_id: string;
   source?: string | null;
   page?: number | null;
+  section_heading?: string | null;
   score?: number;
   snippet?: string;
 };
@@ -1109,6 +1110,9 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
                     {s.page != null && <span className="source-card-meta">第 {s.page} 页</span>}
                     {s.score != null && <span className="source-card-meta">相似度 {(s.score * 100).toFixed(0)}%</span>}
                   </div>
+                  {s.section_heading?.trim() && (
+                    <div className="source-card-section">节：{s.section_heading.trim()}</div>
+                  )}
                   {s.snippet && <div className="source-card-snippet">{s.snippet}</div>}
                 </div>
               ))}

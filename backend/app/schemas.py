@@ -100,6 +100,7 @@ class SourceItem(BaseModel):
     chunk_id: UUID
     source: str | None
     page: int | None
+    section_heading: str | None = None
     score: float
     snippet: str
 

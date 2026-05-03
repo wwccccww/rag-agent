@@ -7,6 +7,13 @@ from app.services.text_extract import chunk_text
 
 
 class ChunkTextFenceTest(unittest.TestCase):
+    def test_short_intro_merged_into_following_fence(self) -> None:
+        """短「例如：」类引言与紧随围栏合并，避免单独小文本块。"""
+        md = "## 五、一对多查询\n\n使用 `<collection>` 来进行连接，例如：\n\n```xml\n<a/>\n```\n"
+        pairs = chunk_text(md, 720, 90, filename="d.md", markdown_fence_aware=True, merge_intro_before_fence_max_chars=320)
+        bodies = [c for c, _ in pairs]
+        self.assertTrue(any("一对多" in c and "<a/>" in c and "```" in c for c in bodies))
+
     def test_short_fence_intact(self) -> None:
         md = "# T\n\nintro\n\n```xml\n<root/>\n```\n\noutro"
         pairs = chunk_text(md, 200, 20, filename="d.md", markdown_fence_aware=True)
