@@ -204,6 +204,21 @@ def _heading_from_chunk_start(content: str, max_lines: int = 8) -> str | None:
     return None
 
 
+def _short_section_label_for_continuation(raw: str | None, max_chars: int) -> str | None:
+    """超长围栏续块前缀用：去掉 #、取首行、截断。"""
+    if not raw or not str(raw).strip():
+        return None
+    s = str(raw).strip().split("\n", 1)[0].strip()
+    while s.startswith("#"):
+        s = s.lstrip("#").strip()
+    s = s.strip()
+    if not s:
+        return None
+    if len(s) <= max_chars:
+        return s
+    return s[: max(1, max_chars - 1)] + "…"
+
+
 def _looks_like_markdown(text: str, filename: str | None) -> bool:
     fn = (filename or "").lower()
     if fn.endswith(".md"):
@@ -243,10 +258,17 @@ def _split_oversized_paragraph(p: str, max_chars: int, overlap: int) -> list[str
     return out
 
 
-def _split_oversized_fence(p: str, max_chars: int, _overlap: int) -> list[str]:
+def _split_oversized_fence(
+    p: str,
+    max_chars: int,
+    _overlap: int,
+    *,
+    continuation_label: str | None = None,
+) -> list[str]:
     """超长围栏块仅在换行处切分，避免在代码/XML 行内硬截断。
 
     子块之间**不使用**与正文相同的字符 _overlap：回退 overlap 容易落在行中，产生半截标签。
+    若提供 continuation_label 且切出多块，从第 2 块起在正文前加 ``[节：… · 续]`` 便于向量与阅读关联小节。
     """
     if len(p) <= max_chars:
         return [p] if p.strip() else []
@@ -272,6 +294,16 @@ def _split_oversized_fence(p: str, max_chars: int, _overlap: int) -> list[str]:
         if end >= n:
             break
         start = end
+    if continuation_label and len(out) > 1:
+        pref = f"[节：{continuation_label} · 续]"
+        merged: list[str] = [out[0]]
+        for piece in out[1:]:
+            head = piece.lstrip()[:40]
+            if head.startswith("[节：") and "· 续]" in head:
+                merged.append(piece)
+            else:
+                merged.append(f"{pref}\n\n{piece}".strip())
+        return merged
     return out
 
 
@@ -298,10 +330,23 @@ def _pack_paragraphs(paragraphs: list[str], max_chars: int, overlap: int) -> lis
     return [c.strip() for c in chunks if c.strip()]
 
 
-def _pack_mixed_units(units: list[tuple[str, str]], max_chars: int, overlap: int) -> list[str]:
+def _pack_mixed_units(
+    units: list[tuple[str, str]],
+    max_chars: int,
+    overlap: int,
+    *,
+    section_heading: str | None = None,
+    fence_continuation_prefix: bool = True,
+    continuation_title_max_chars: int = 72,
+) -> list[str]:
     """在 text 单元上沿用段落合并与长段软切；fence 单元整块输出，超长时仅按换行切。"""
     chunks: list[str] = []
     buf = ""
+    cont_label: str | None = None
+    if fence_continuation_prefix and section_heading and section_heading.strip():
+        cont_label = _short_section_label_for_continuation(
+            section_heading, max(8, continuation_title_max_chars)
+        )
     for kind, p in units:
         if kind == "fence":
             if buf and len(buf) + len(p) + 2 <= max_chars:
@@ -316,7 +361,11 @@ def _pack_mixed_units(units: list[tuple[str, str]], max_chars: int, overlap: int
             if len(p) <= max_chars:
                 chunks.append(p)
             else:
-                chunks.extend(_split_oversized_fence(p, max_chars, overlap))
+                chunks.extend(
+                    _split_oversized_fence(
+                        p, max_chars, overlap, continuation_label=cont_label
+                    )
+                )
             continue
         # text
         if len(buf) + len(p) + 2 <= max_chars:
@@ -370,12 +419,15 @@ def chunk_text(
     markdown_by_heading: bool = True,
     markdown_fence_aware: bool = True,
     merge_intro_before_fence_max_chars: int = 320,
+    fence_continuation_prefix: bool = True,
+    continuation_title_max_chars: int = 72,
 ) -> list[tuple[str, dict]]:
     """
     将全文切块。Markdown（.md 或含 ## 标题）在 markdown_by_heading 为 True 时先按标题分节；
     markdown_fence_aware 且判定为 Markdown 时，节内识别 ``` 围栏，围栏内不按句号/短窗切分，
     超长围栏仅在换行处切；可选将不超过 merge_intro_before_fence_max_chars 的紧邻引言并入围栏单元，
-    避免「例如：」单独成块。每节首标题写入 meta.section_heading（纯代码块用节标题回落）。
+    避免「例如：」单独成块。超长围栏多块时可选为续块加 ``[节：… · 续]`` 前缀（fence_continuation_prefix）。
+    每节首标题写入 meta.section_heading（纯代码块用节标题回落）。
     """
     text = text.strip()
     if not text:
@@ -395,7 +447,14 @@ def chunk_text(
             if merge_intro_before_fence_max_chars > 0:
                 units = _merge_short_intro_before_fence_units(units, merge_intro_before_fence_max_chars)
             if units:
-                for c in _pack_mixed_units(units, max_chars, overlap):
+                for c in _pack_mixed_units(
+                    units,
+                    max_chars,
+                    overlap,
+                    section_heading=sec_heading,
+                    fence_continuation_prefix=fence_continuation_prefix,
+                    continuation_title_max_chars=continuation_title_max_chars,
+                ):
                     pieces.append((c, sec_heading))
             elif sec.strip():
                 for c in _pack_paragraphs([sec.strip()], max_chars, overlap):

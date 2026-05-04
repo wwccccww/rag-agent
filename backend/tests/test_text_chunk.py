@@ -29,6 +29,25 @@ class ChunkTextFenceTest(unittest.TestCase):
                 # 子块不应在行中出现半截标签名（若整行很短则整行在块内）
                 self.assertNotRegex(c, r"^[a-z]{1,3}>")
 
+    def test_oversized_fence_continuation_gets_section_prefix(self) -> None:
+        """超长围栏第 2 段起带 [节：… · 续]（需节标题）。"""
+        lines = ["## 五、演示", "", "```xml"] + [f"<l>{i}</l>" for i in range(120)] + ["```"]
+        md = "\n".join(lines)
+        pairs = chunk_text(
+            md,
+            200,
+            10,
+            filename="d.md",
+            markdown_fence_aware=True,
+            merge_intro_before_fence_max_chars=0,
+            fence_continuation_prefix=True,
+            continuation_title_max_chars=40,
+        )
+        bodies = [c for c, _ in pairs]
+        cont = [b for b in bodies if b.lstrip().startswith("[节：") and "· 续]" in b[:30]]
+        self.assertTrue(cont, "expected at least one continuation-prefixed chunk")
+        self.assertIn("五、演示", cont[0])
+
     def test_fence_aware_off_uses_legacy_paragraph_path(self) -> None:
         md = "# A\n\n```\nx\n```"
         a = chunk_text(md, 50, 5, filename="d.md", markdown_fence_aware=True)
