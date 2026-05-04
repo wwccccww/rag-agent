@@ -15,6 +15,7 @@ from app.config import settings
 from app.kb import normalize_doc_type, resolve_kb_collection, sanitize_doc_types_list
 from app.models import Chunk, Document, Memory
 from app.services.ollama import OllamaClient
+from app.services.reranker import rerank as reranker_rerank
 from app.services.text_extract import chunk_text, chunk_text_hierarchical, extract_text
 from app.telemetry import telemetry
 
@@ -357,7 +358,11 @@ def search_chunks(
         telemetry.record_timing("rag.embed_failed_ms", 0.0)
         qemb = None
     mult = max(2, int(getattr(settings, "rag_candidate_top_k_multiplier", 5) or 5))
-    candidate = top_k * mult  # 初步召回候选数
+    # Reranker 开启时扩大内部 top_k：先多召回 rerank_candidate_k 倍候选，精排后再截取到 top_k
+    _rerank_on = bool(getattr(settings, "rag_rerank_enabled", False))
+    _rerank_k = max(1, int(getattr(settings, "rag_rerank_candidate_k", 3) or 3))
+    _fetch_top_k = top_k * _rerank_k if _rerank_on else top_k
+    candidate = _fetch_top_k * mult  # 初步召回候选数
 
     # ── 1. 向量检索（带相关性阈值过滤，仅对 is_index_chunk=True 的子块）──
     vec_rows: list[Any] = []
@@ -428,13 +433,13 @@ def search_chunks(
         cid
         for cid in ordered_rrf
         if _prefetch_passes_relevance_gate(cid, vec_similarity, trgm_similarity)
-    ][: top_k * 2]
-    if settings.rag_gate_relax_fill and len(prefetch_ids) < top_k:
+    ][: _fetch_top_k * 2]
+    if settings.rag_gate_relax_fill and len(prefetch_ids) < _fetch_top_k:
         before = len(prefetch_ids)
         for cid in ordered_rrf:
             if cid not in prefetch_ids:
                 prefetch_ids.append(cid)
-            if len(prefetch_ids) >= top_k * 2:
+            if len(prefetch_ids) >= _fetch_top_k * 2:
                 break
         if len(prefetch_ids) > before:
             logging.info(
@@ -490,7 +495,7 @@ def search_chunks(
         if per_doc_count.get(dk, 0) < max_per_doc:
             per_doc_count[dk] = per_doc_count.get(dk, 0) + 1
             top_ids.append(cid)
-        if len(top_ids) >= top_k:
+        if len(top_ids) >= _fetch_top_k:
             break
 
     top_ids = _maybe_swap_same_doc_from_prefetch(
@@ -556,6 +561,18 @@ def search_chunks(
                 "full_content": full_content,
             }
         )
+    # ── 6. Reranker 精排（可选）─────────────────────────────────────
+    if getattr(settings, "rag_rerank_enabled", False) and out:
+        t_rerank = time.perf_counter()
+        out = reranker_rerank(
+            query,
+            out,
+            model_name=str(getattr(settings, "rag_rerank_model",
+                                   "cross-encoder/ms-marco-MiniLM-L-6-v2")),
+            top_k=top_k,
+        )
+        telemetry.record_timing("rag.rerank_ms", (time.perf_counter() - t_rerank) * 1000)
+
     return out
 
 

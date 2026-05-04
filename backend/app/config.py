@@ -85,6 +85,17 @@ class Settings(BaseSettings):
     # 父块最大字符数：多个小节合并的父块总字符数上限
     chunk_parent_max_chars: int = 1500
 
+    # ── Cross-Encoder Reranker ────────────────────────────────────────────────
+    # 开启后：RRF 召回 rag_top_k * rag_rerank_candidate_k 候选，再用 CrossEncoder 精排取 top_k
+    # 首次请求时自动从 HuggingFace 下载模型（约 100 MB），之后缓存在进程内
+    rag_rerank_enabled: bool = False
+    # 可选模型：
+    #   cross-encoder/ms-marco-MiniLM-L-6-v2  （英文，~100 MB，快）
+    #   BAAI/bge-reranker-base                 （中英双语，~280 MB，中文更好）
+    rag_rerank_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # Reranker 候选倍数：实际召回 top_k * 本值 条后精排（越大效果越好但越慢）
+    rag_rerank_candidate_k: int = 3
+
     # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
     # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）
     # SearXNG：自建实例（免费，支持代理），如 http://localhost:8888
