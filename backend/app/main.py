@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, init_db
 from app.routers import chat, docs, health, ingest, memory, metrics, sessions, stats
+from app.services.reranker import warmup as warmup_reranker
 
 logging.basicConfig(level=logging.INFO)
 
@@ -14,8 +15,11 @@ logging.basicConfig(level=logging.INFO)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     # 在后台线程做 DB 初始化，不阻塞主进程启动
-    t = threading.Thread(target=init_db, daemon=True)
-    t.start()
+    t_db = threading.Thread(target=init_db, daemon=True)
+    t_db.start()
+    # 若 RAG_RERANK_ENABLED=true，后台提前加载 CrossEncoder 模型
+    t_rerank = threading.Thread(target=warmup_reranker, daemon=True)
+    t_rerank.start()
     yield
 
 

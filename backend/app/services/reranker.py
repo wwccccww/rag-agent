@@ -1,12 +1,14 @@
 """
 Cross-Encoder Reranker（ms-marco-MiniLM 系列）。
 
-惰性加载：首次调用 rerank() 时才下载/加载模型，不影响冷启动速度。
+支持启动预热：若 RAG_RERANK_ENABLED=true，后端启动时会在后台线程自动加载模型，
+避免首次请求出现长达数秒的等待。
 模型默认为 cross-encoder/ms-marco-MiniLM-L-6-v2（~100 MB），也可通过
 RAG_RERANK_MODEL 配置为中文增强版 BAAI/bge-reranker-base（~280 MB）。
 
 用法：
-    from app.services.reranker import rerank
+    from app.services.reranker import rerank, warmup
+    warmup()          # 启动时预热（可选，main.py lifespan 已调用）
     results = rerank(query, candidates, top_k=8)
 """
 import logging
@@ -39,6 +41,25 @@ def _get_encoder(model_name: str) -> Any:
         _loaded_model = model_name
         logging.info("[Reranker] 模型加载完成，耗时 %.1f s", time.perf_counter() - t0)
         return _encoder
+
+
+def warmup(model_name: str | None = None) -> None:
+    """启动预热：在后台提前加载 CrossEncoder 模型，消除首次请求的冷启动延迟。
+
+    若未传入 model_name，则从 settings 读取配置；若 RAG_RERANK_ENABLED=false 则跳过。
+    """
+    from app.config import settings  # noqa: PLC0415
+
+    if not getattr(settings, "rag_rerank_enabled", False):
+        logging.info("[Reranker] 未启用，跳过预热")
+        return
+
+    name = model_name or str(getattr(settings, "rag_rerank_model",
+                                      "cross-encoder/ms-marco-MiniLM-L-6-v2"))
+    try:
+        _get_encoder(name)
+    except Exception as e:
+        logging.warning("[Reranker] 预热失败（不影响服务启动）: %s", e)
 
 
 def rerank(

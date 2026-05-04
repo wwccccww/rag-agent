@@ -39,7 +39,9 @@ def _build_system_prompt(
         page = s.get("page")
         pg = f" p.{page}" if page else ""
         sec = s.get("section_heading")
-        sec_part = f" · 节：{sec}" if isinstance(sec, str) and sec.strip() else ""
+        # 剥离 Markdown 标题前缀（# / ## / ### 等），避免 LLM 在 CoT 中复现原始 # 符号
+        sec_clean = sec.lstrip("#").strip() if isinstance(sec, str) else ""
+        sec_part = f" · 节：{sec_clean}" if sec_clean else ""
         body = s.get("full_content", s.get("snippet", ""))
         rag_lines.append(f"[S{i}] ({src}{pg}{sec_part})\n{body}")
 
@@ -63,16 +65,29 @@ def _build_system_prompt(
         f"【长期记忆】\n{mem_block}\n\n【知识库片段】\n(无检索片段)"
     )
 
+    cot_enabled = has_rag  # 只有存在知识库片段时才触发 CoT 格式
+
     strict_rule = (
-        "你是一个文档摘录助手，只能从上方【知识库片段】中提取信息作答。\n\n"
-        "【铁律，不得违反】\n"
-        "A. 每一个出现在回答里的字段名、路径、参数、值，都必须能在上方某个片段中原文找到。\n"
-        "   如果找不到原文，就不写——禁止用自己的「常识」或「推测」补充任何内容。\n"
-        "B. 片段中明确写了的内容（如请求路径、字段是否必须），必须原样呈现，不得修改或加注「可能」「通常」等猜测词。\n"
-        "C. 禁止在片段没有提到的情况下说「文档未提供」——如果片段里有这个信息，直接用；如果片段里真的没有，才写「知识库中未找到该信息」。\n"
-        "D. 回答末尾标注引用编号 [S1] [S2]，编号与上方片段序号一致。\n"
-        "E. 若片段数为 0 或所有片段均与问题无关，只说：「知识库中没有找到相关内容。」不做任何补充。\n"
-        "F. 纯创作/翻译/计算类问题不受以上限制，正常完成即可。\n"
+        "你是一个严格基于知识库文档回答问题的助手。\n\n"
+        "【铁律】\n"
+        "A. 每一个出现在回答里的字段名、路径、参数、值，都必须能在上方某个片段中原文找到；\n"
+        "   找不到原文就不写，禁止用「常识」或「推测」补充。\n"
+        "B. 片段中已有的内容（路径、是否必须等）必须原样呈现，不得加「可能」「通常」等猜测词。\n"
+        "C. 禁止在片段有该信息的情况下说「文档未提供」；片段里真没有才写「知识库中未找到」。\n"
+        "D. 回答末尾用 [S1][S2] 标注引用的片段编号。\n"
+        "E. 若片段数为 0 或全部无关，只说：「知识库中没有找到相关内容。」\n"
+        "F. 纯创作/翻译/计算类问题不受以上限制。\n\n"
+        + (
+            f"【回答格式 — 必须严格遵守，共 {len(rag_lines)} 个片段】\n"
+            f"第一步「片段摘录」：每个片段单独一行，编号必须与片段序号完全对应，格式：\n"
+            + "".join(
+                f"  [S{i}] → <片段{i}中与问题相关的原文内容；若该片段与问题完全无关，写「无关」>\n"
+                for i in range(1, len(rag_lines) + 1)
+            )
+            + f"第二步「回答」：仅基于第一步摘录的内容整合作答，末尾标注引用编号。\n"
+            f"禁止跳过第一步；若用户问及多个接口/功能，回答中必须分别呈现。\n"
+            if cot_enabled else ""
+        )
     )
 
     return (
@@ -80,6 +95,11 @@ def _build_system_prompt(
         + "\n\n---\n\n"
         + strict_rule
     )
+
+
+def _cot_prefill(n: int) -> str:
+    """生成 CoT prefill 文本，以 [S1] → 结尾，引导模型从第一条开始逐行填写。"""
+    return f"片段摘录（共 {n} 个片段，逐一检查）：\n[S1] → "
 
 
 def _generate_title(client: OllamaClient, first_message: str) -> str:
@@ -211,8 +231,8 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             ]
             yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
 
-            # ── 知识库无内容且无记忆时，代码层直接拦截，不调用 LLM ──
-            if not sources and not mem_lines:
+            # ── 知识库无内容时，代码层直接拦截，不调用 LLM（避免模型借助聊天历史编造答案）──
+            if not sources:
                 no_content_reply = "知识库中没有找到相关内容，无法回答该问题。"
                 yield _sse("token", {"delta": no_content_reply})
                 db.add(Message(session_id=sid, role="assistant", content=no_content_reply))
@@ -228,10 +248,19 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 if m.role in ("user", "assistant"):
                     ollama_messages.append({"role": m.role, "content": m.content})
 
+            # ── CoT prefill：有知识库片段时注入 assistant 开头，强制模型先做摘录步骤 ──
+            use_cot = bool(sources)
+            cot_text = _cot_prefill(len(sources)) if use_cot else ""
+            if use_cot:
+                ollama_messages.append({"role": "assistant", "content": cot_text})
+
             # ── 流式生成，统计 tok/s ──────────────────────────────────
-            full = ""
+            full = cot_text
             token_count = 0
             t_stream_start = time.perf_counter()
+            if use_cot:
+                # prefill 文本对用户可见，先主动推送
+                yield _sse("token", {"delta": cot_text})
             for delta in client.chat_stream(ollama_messages, temperature=0.3):
                 full += delta
                 token_count += 1
