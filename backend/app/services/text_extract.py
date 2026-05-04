@@ -97,6 +97,10 @@ def fetch_url(url: str, timeout: float = 15.0) -> tuple[str, str]:
 _MD_HEADING = re.compile(r"^#{1,6}\s+\S")
 _CLOSING_FENCE_RE = re.compile(r"^`{3,}\s*$")
 
+# Parent-Child 分块：父块最小内容字符阈值（可通过 config 覆盖）
+_PARENT_CHILD_MIN_PARENT_CHARS_DEFAULT = 200
+_PARENT_CHILD_MAX_PARENT_CHARS_DEFAULT = 1500
+
 
 def _heading_line_level(line: str) -> int | None:
     """与 _MD_HEADING 一致：行首 1–6 个 # 且其后有空白与正文。"""
@@ -453,6 +457,252 @@ def _markdown_section_tuples(text: str) -> list[tuple[str, str | None]]:
 def _markdown_sections(text: str) -> list[str]:
     """兼容：仅返回分节正文列表。"""
     return [s for s, _ in _markdown_section_tuples(text)]
+
+
+# ── Parent-Child 分块 ──────────────────────────────────────────────────────────
+
+def _section_heading_level(section_text: str) -> int | None:
+    """从节首行提取标题级别（如 `### 5.1.2` → 3）。"""
+    for line in section_text.splitlines():
+        st = line.strip()
+        if _MD_HEADING.match(st):
+            return _heading_line_level(line)
+    return None
+
+
+def _detect_parent_level(section_tuples: list[tuple[str, str | None]]) -> int | None:
+    """自动检测「父块层级」：叶子层（最深标题级别）的上一层。
+
+    例如文档有 ###/####/##### 三层，叶子层 = 5，父块层 = 4（`####`）。
+    若文档只有一层标题，返回该层（每个标题各成一组）。
+    """
+    levels: list[int] = []
+    for sec, _ in section_tuples:
+        lv = _section_heading_level(sec)
+        if lv is not None:
+            levels.append(lv)
+    if not levels:
+        return None
+    leaf_level = max(levels)
+    min_level = min(levels)
+    # 父块层 = 叶子层 - 1；若叶子层就是最浅层则用叶子层（每节自成父块）
+    return max(min_level, leaf_level - 1)
+
+
+def _group_into_parent_sections(
+    section_tuples: list[tuple[str, str | None]],
+    min_parent_chars: int,
+    max_parent_chars: int,
+) -> list[list[tuple[str, str | None]]]:
+    """把细粒度分节列表合并为「父节」组。
+
+    核心策略：**按标题层级**分组，而非字符数。
+    1. 先检测「父块层级」= 文档叶子层（最深标题）的上一层。
+       例如 ###/####/##### 文档：叶子层 5 → 父块层 4（每个 `####` 开启一个新组）。
+    2. 遇到标题层级 ≤ 父块层级 → 新开一个父块组（等于或更浅的标题是新的语义单元起点）。
+    3. 更深的标题（子节）追加进当前组。
+    4. 若合并后超过 max_parent_chars，按字符数二次切分（防止单父块过长）。
+    这样 ##### 1.1.1 / 1.1.2 / 1.1.3 三个子节会合并进同一个以 #### 1.1注册 开头的父块中。
+    """
+    if not section_tuples:
+        return []
+
+    parent_lv = _detect_parent_level(section_tuples)
+
+    # 若无法检测层级，回落到按字符数简单分组
+    if parent_lv is None:
+        return [[t] for t in section_tuples]
+
+    # ── 按层级分组 ─────────────────────────────────────────────────
+    raw_groups: list[list[tuple[str, str | None]]] = []
+    cur_group: list[tuple[str, str | None]] = []
+
+    for tup in section_tuples:
+        sec, _ = tup
+        lv = _section_heading_level(sec)
+        # 遇到「父块层级或更浅」的标题 → 开新组
+        if lv is not None and lv <= parent_lv:
+            if cur_group:
+                raw_groups.append(cur_group)
+            cur_group = [tup]
+        else:
+            # 更深的子节 / 无标题内容 → 追加进当前组
+            cur_group.append(tup)
+
+    if cur_group:
+        raw_groups.append(cur_group)
+
+    # ── 二次切分：防止单父块超过 max_parent_chars ──────────────────
+    result: list[list[tuple[str, str | None]]] = []
+    for group in raw_groups:
+        total = sum(len(s) for s, _ in group)
+        if total <= max_parent_chars:
+            result.append(group)
+            continue
+        # 超长：按字符数二次切分（保持至少一个 tup 一组）
+        sub: list[tuple[str, str | None]] = []
+        sub_chars = 0
+        for tup in group:
+            s_len = len(tup[0])
+            if sub and sub_chars + s_len > max_parent_chars:
+                result.append(sub)
+                sub = [tup]
+                sub_chars = s_len
+            else:
+                sub.append(tup)
+                sub_chars += s_len
+        if sub:
+            result.append(sub)
+
+    return result
+
+
+def chunk_text_hierarchical(
+    text: str,
+    max_chars: int,
+    overlap: int,
+    *,
+    filename: str | None = None,
+    markdown_by_heading: bool = True,
+    markdown_fence_aware: bool = True,
+    merge_intro_before_fence_max_chars: int = 320,
+    fence_continuation_prefix: bool = True,
+    continuation_title_max_chars: int = 72,
+    min_parent_chars: int = _PARENT_CHILD_MIN_PARENT_CHARS_DEFAULT,
+    max_parent_chars: int = _PARENT_CHILD_MAX_PARENT_CHARS_DEFAULT,
+) -> list[tuple[str, dict, list[tuple[str, dict]]]]:
+    """Parent-Child 分块。
+
+    返回 list of (parent_content, parent_meta, children)，其中：
+    - parent_content / parent_meta：父块完整内容与元数据（用于喂给模型）
+    - children：list of (child_content, child_meta)，子块（用于向量检索）
+
+    若文档不是 Markdown 或不适合父子切分，则每个 chunk 作为自身的「单节父块」，
+    children 为空列表（调用方统一按普通 chunk 入库，is_index_chunk=True）。
+
+    父块与子块共享 section_heading；父块额外有 meta["is_parent"]=True。
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    use_md = markdown_by_heading and _looks_like_markdown(text, filename)
+    if not use_md:
+        # 非 Markdown：直接退化为普通切块，每块自成父块
+        plain = chunk_text(
+            text, max_chars, overlap,
+            filename=filename,
+            markdown_by_heading=False,
+            markdown_fence_aware=False,
+        )
+        return [(c, m, []) for c, m in plain]
+
+    raw_sections = _markdown_section_tuples(text)
+    groups = _group_into_parent_sections(raw_sections, min_parent_chars, max_parent_chars)
+
+    result: list[tuple[str, dict, list[tuple[str, dict]]]] = []
+    global_idx = 0  # 父块编号（用于 chunk_index）
+
+    for group in groups:
+        # ── 父块内容：所有组内节拼接 ──────────────────────
+        parent_content = "\n\n".join(sec for sec, _ in group).strip()
+        # 父块面包屑：取组内首节的面包屑（最能代表父块语义）
+        first_crumb = group[0][1]
+        parent_heading = (
+            (first_crumb.strip() if first_crumb and first_crumb.strip() else None)
+            or _first_heading_in_section(group[0][0])
+        )
+        parent_meta: dict = {
+            "chunk_index": global_idx,
+            "is_parent": True,
+        }
+        if parent_heading:
+            parent_meta["section_heading"] = parent_heading[:200]
+
+        if len(group) == 1:
+            # 单节组：可能自身较大，需要进一步切块；子块即是切出来的块
+            sec, sec_crumb = group[0]
+            sec_heading = (
+                (sec_crumb.strip() if sec_crumb and sec_crumb.strip() else None)
+                or _first_heading_in_section(sec)
+            )
+            children_raw = _cut_single_section(
+                sec, sec_heading, max_chars, overlap,
+                markdown_fence_aware=markdown_fence_aware,
+                merge_intro_before_fence_max_chars=merge_intro_before_fence_max_chars,
+                fence_continuation_prefix=fence_continuation_prefix,
+                continuation_title_max_chars=continuation_title_max_chars,
+                start_idx=global_idx,
+            )
+            if len(children_raw) <= 1:
+                # 单节且只切出一块 → 退化：只有一个块，无须父子分离
+                result.append((parent_content, parent_meta, []))
+                global_idx += 1
+                continue
+            children = [(c, m) for c, m in children_raw]
+        else:
+            # 多节合并组：每个小节切块作为子块
+            children: list[tuple[str, dict]] = []
+            child_idx = global_idx
+            for sec, sec_crumb in group:
+                sec_heading = (
+                    (sec_crumb.strip() if sec_crumb and sec_crumb.strip() else None)
+                    or _first_heading_in_section(sec)
+                )
+                for c, m in _cut_single_section(
+                    sec, sec_heading, max_chars, overlap,
+                    markdown_fence_aware=markdown_fence_aware,
+                    merge_intro_before_fence_max_chars=merge_intro_before_fence_max_chars,
+                    fence_continuation_prefix=fence_continuation_prefix,
+                    continuation_title_max_chars=continuation_title_max_chars,
+                    start_idx=child_idx,
+                ):
+                    children.append((c, m))
+                    child_idx += 1
+
+        result.append((parent_content, parent_meta, children))
+        global_idx += 1 + len(children)
+
+    return result
+
+
+def _cut_single_section(
+    sec: str,
+    sec_heading: str | None,
+    max_chars: int,
+    overlap: int,
+    *,
+    markdown_fence_aware: bool,
+    merge_intro_before_fence_max_chars: int,
+    fence_continuation_prefix: bool,
+    continuation_title_max_chars: int,
+    start_idx: int,
+) -> list[tuple[str, dict]]:
+    """对单个节正文做内部切块，返回 (content, meta) 列表。"""
+    if markdown_fence_aware:
+        units = _section_to_mixed_units(sec)
+        if merge_intro_before_fence_max_chars > 0:
+            units = _merge_short_intro_before_fence_units(units, merge_intro_before_fence_max_chars)
+        raw_chunks = _pack_mixed_units(
+            units, max_chars, overlap,
+            section_heading=sec_heading,
+            fence_continuation_prefix=fence_continuation_prefix,
+            continuation_title_max_chars=continuation_title_max_chars,
+        ) if units else ([sec.strip()] if sec.strip() else [])
+    else:
+        paragraphs = [p.strip() for p in sec.split("\n\n") if p.strip()] or ([sec] if sec.strip() else [])
+        raw_chunks = _pack_paragraphs(paragraphs, max_chars, overlap)
+
+    out: list[tuple[str, dict]] = []
+    for i, c in enumerate(raw_chunks):
+        if not c.strip():
+            continue
+        m: dict = {"chunk_index": start_idx + i}
+        h = sec_heading or _heading_from_chunk_start(c)
+        if h:
+            m["section_heading"] = h[:200]
+        out.append((c.strip(), m))
+    return out
 
 
 def chunk_text(

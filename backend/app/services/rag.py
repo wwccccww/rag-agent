@@ -15,7 +15,7 @@ from app.config import settings
 from app.kb import normalize_doc_type, resolve_kb_collection, sanitize_doc_types_list
 from app.models import Chunk, Document, Memory
 from app.services.ollama import OllamaClient
-from app.services.text_extract import chunk_text, extract_text
+from app.services.text_extract import chunk_text, chunk_text_hierarchical, extract_text
 from app.telemetry import telemetry
 
 
@@ -217,10 +217,7 @@ def ingest_bytes(
     db.add(doc)
     db.flush()
 
-    pairs = chunk_text(
-        text,
-        settings.chunk_max_chars,
-        settings.chunk_overlap,
+    common_kwargs = dict(
         filename=filename,
         markdown_by_heading=settings.chunk_markdown_by_heading,
         markdown_fence_aware=settings.chunk_markdown_fence_aware,
@@ -228,29 +225,112 @@ def ingest_bytes(
         fence_continuation_prefix=settings.chunk_fence_continuation_prefix,
         continuation_title_max_chars=settings.chunk_continuation_title_max_chars,
     )
-    # 过滤无实质内容的短片段
-    pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
-    if not pairs:
-        db.rollback()
-        raise ValueError("document has no usable content after chunking")
 
+    use_parent_child = bool(getattr(settings, "chunk_parent_child", True))
     n = 0
-    for content, meta in pairs:
-        emb = ollama.embed(content[:8000], apply_embed_budget=False)
-        meta_out = dict(meta) if isinstance(meta, dict) else {}
-        meta_out["doc_type"] = dtype
-        meta_out["kb_collection"] = coll
-        ch = Chunk(
-            document_id=doc.id,
-            chunk_index=int(meta.get("chunk_index", n)),
-            content=content,
-            meta=meta_out,
-            embedding=emb,
+
+    if use_parent_child:
+        hierarchical = chunk_text_hierarchical(
+            text,
+            settings.chunk_max_chars,
+            settings.chunk_overlap,
+            min_parent_chars=int(getattr(settings, "chunk_parent_min_chars", 200) or 200),
+            max_parent_chars=int(getattr(settings, "chunk_parent_max_chars", 1500) or 1500),
+            **common_kwargs,
         )
-        db.add(ch)
-        n += 1
-    db.commit()
-    logging.info("[RAG] ingested %s → %d chunks (filtered short chunks)", filename, n)
+        # 过滤父块：内容不为空
+        hierarchical = [
+            (pc, pm, ch_list) for pc, pm, ch_list in hierarchical if len(pc.strip()) >= _MIN_CHUNK_CHARS
+        ]
+        if not hierarchical:
+            db.rollback()
+            raise ValueError("document has no usable content after chunking")
+
+        for parent_content, parent_meta, children in hierarchical:
+            # 子块为空说明该节不需要父子分离，单块直接作为 is_index_chunk=True 入库
+            if not children:
+                emb = ollama.embed(parent_content[:8000], apply_embed_budget=False)
+                meta_out: dict = dict(parent_meta)
+                meta_out.update({"doc_type": dtype, "kb_collection": coll})
+                meta_out.pop("is_parent", None)
+                db.add(Chunk(
+                    document_id=doc.id,
+                    chunk_index=int(parent_meta.get("chunk_index", n)),
+                    content=parent_content,
+                    meta=meta_out,
+                    embedding=emb,
+                    is_index_chunk=True,
+                ))
+                n += 1
+                continue
+
+            # 先写父块（is_index_chunk=False，不参与检索）
+            parent_meta_out: dict = dict(parent_meta)
+            parent_meta_out.update({"doc_type": dtype, "kb_collection": coll})
+            # 父块 embedding 不参与检索，仅为满足非空列约束而写入。
+            # 只用「标题 + 首段正文」生成 embedding，避免大块内容超出 nomic-embed-text
+            # 的 token 上限（约 2048 tokens）导致 Ollama 500。
+            _parent_heading = str(parent_meta_out.get("section_heading", ""))
+            _parent_snippet = (_parent_heading + "\n\n" + parent_content).strip()[:800]
+            parent_emb = ollama.embed(_parent_snippet, apply_embed_budget=False)
+            parent_chunk = Chunk(
+                document_id=doc.id,
+                chunk_index=int(parent_meta.get("chunk_index", n)),
+                content=parent_content,
+                meta=parent_meta_out,
+                embedding=parent_emb,
+                is_index_chunk=False,
+            )
+            db.add(parent_chunk)
+            db.flush()  # 让 parent_chunk.id 可用
+
+            # 再写子块（is_index_chunk=True，参与检索，持有 parent_chunk_id）
+            valid_children = [(c, m) for c, m in children if len(c.strip()) >= _MIN_CHUNK_CHARS]
+            for child_content, child_meta in valid_children:
+                child_emb = ollama.embed(child_content[:8000], apply_embed_budget=False)
+                child_meta_out: dict = dict(child_meta)
+                child_meta_out.update({"doc_type": dtype, "kb_collection": coll})
+                db.add(Chunk(
+                    document_id=doc.id,
+                    chunk_index=int(child_meta.get("chunk_index", n)),
+                    content=child_content,
+                    meta=child_meta_out,
+                    embedding=child_emb,
+                    parent_chunk_id=parent_chunk.id,
+                    is_index_chunk=True,
+                ))
+                n += 1
+
+        db.commit()
+        logging.info("[RAG] ingested %s → %d index chunks (parent-child mode)", filename, n)
+    else:
+        pairs = chunk_text(
+            text,
+            settings.chunk_max_chars,
+            settings.chunk_overlap,
+            **common_kwargs,
+        )
+        pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
+        if not pairs:
+            db.rollback()
+            raise ValueError("document has no usable content after chunking")
+
+        for content, meta in pairs:
+            emb = ollama.embed(content[:8000], apply_embed_budget=False)
+            meta_out = dict(meta) if isinstance(meta, dict) else {}
+            meta_out["doc_type"] = dtype
+            meta_out["kb_collection"] = coll
+            db.add(Chunk(
+                document_id=doc.id,
+                chunk_index=int(meta.get("chunk_index", n)),
+                content=content,
+                meta=meta_out,
+                embedding=emb,
+            ))
+            n += 1
+        db.commit()
+        logging.info("[RAG] ingested %s → %d chunks", filename, n)
+
     return doc.id, n
 
 
@@ -279,7 +359,7 @@ def search_chunks(
     mult = max(2, int(getattr(settings, "rag_candidate_top_k_multiplier", 5) or 5))
     candidate = top_k * mult  # 初步召回候选数
 
-    # ── 1. 向量检索（带相关性阈值过滤）─────────────────────────
+    # ── 1. 向量检索（带相关性阈值过滤，仅对 is_index_chunk=True 的子块）──
     vec_rows: list[Any] = []
     vec_similarity: dict[Any, float] = {}
     vec_ranks: dict[Any, int] = {}
@@ -290,6 +370,7 @@ def search_chunks(
             select(Chunk.id, dist_expr.label("dist"))
             .join(Document, Chunk.document_id == Document.id)
             .where(Document.kb_collection == coll)
+            .where(Chunk.is_index_chunk.is_(True))
             .where(dist_expr < settings.vector_distance_threshold)
         )
         if dfilter:
@@ -304,7 +385,7 @@ def search_chunks(
             vec_similarity = {row.id: round(1.0 - float(row.dist), 4) for row in vec_rows}
             vec_ranks = {row.id: i + 1 for i, row in enumerate(vec_rows)}
 
-    # ── 2. 三元组文本检索（pg_trgm word_similarity）────────────
+    # ── 2. 三元组文本检索（pg_trgm word_similarity，仅 is_index_chunk=True）──
     # 用 word_similarity(query, text) 衡量「查询词作为子串出现在文档中的程度」
     # 适合短查询 vs 长文档，比 similarity() 更合适
     trgm_ranks: dict[Any, int] = {}
@@ -318,6 +399,7 @@ def search_chunks(
                 select(Chunk.id, wsim_expr.label("wsim"))
                 .join(Document, Chunk.document_id == Document.id)
                 .where(Document.kb_collection == coll)
+                .where(Chunk.is_index_chunk.is_(True))
                 .where(wsim_expr > trgm_min)
             )
             if dfilter:
@@ -374,7 +456,27 @@ def search_chunks(
         .where(Chunk.id.in_(prefetch_ids))
     ).all()
     telemetry.record_timing("rag.fetch_ms", (time.perf_counter() - t_fetch) * 1000)
-    chunk_map = {ch.id: (ch, doc) for ch, doc in rows}
+    chunk_map: dict[Any, tuple[Any, Any]] = {ch.id: (ch, doc) for ch, doc in rows}
+
+    # ── 4b. Parent-Child：将子块替换为对应父块内容（去重）─────────
+    # 若命中的子块携带 parent_chunk_id，则拉取父块并用父块内容喂给模型（保留子块分数）。
+    # 多个子块若共享同一父块，仅保留分数最高的一条（去重父块）。
+    parent_ids_needed: set[Any] = set()
+    for cid in prefetch_ids:
+        ch, _ = chunk_map.get(cid, (None, None))
+        if ch is not None and ch.parent_chunk_id is not None:
+            parent_ids_needed.add(ch.parent_chunk_id)
+
+    parent_chunk_map: dict[Any, Any] = {}
+    if parent_ids_needed:
+        t_parent = time.perf_counter()
+        parent_rows = db.execute(
+            select(Chunk).where(Chunk.id.in_(parent_ids_needed))
+        ).scalars().all()
+        telemetry.record_timing("rag.parent_fetch_ms", (time.perf_counter() - t_parent) * 1000)
+        parent_chunk_map = {pc.id: pc for pc in parent_rows}
+        logging.info("[RAG] parent-child: fetched %d parent chunks for %d matched children",
+                     len(parent_chunk_map), len(parent_ids_needed))
 
     # ── 5. 来源多样性过滤：每个文档最多贡献 rag_max_chunks_per_doc 个 chunk ──
     max_per_doc = max(1, int(getattr(settings, "rag_max_chunks_per_doc", 4) or 4))
@@ -395,11 +497,31 @@ def search_chunks(
         top_ids, prefetch_ids, chunk_map, rrf, vec_similarity, trgm_similarity, max_per_doc
     )
 
-    out: list[dict[str, Any]] = []
+    # Parent-Child 去重：若多个子块共享同一父块，仅保留 RRF 分最高那条
+    seen_parent_ids: set[Any] = set()
+    deduped_top_ids: list[Any] = []
     for cid in top_ids:
+        ch, _ = chunk_map.get(cid, (None, None))
+        if ch is None:
+            continue
+        pid = getattr(ch, "parent_chunk_id", None)
+        if pid is not None and pid in parent_chunk_map:
+            if pid in seen_parent_ids:
+                continue  # 同父块已有更高分的子块，跳过
+            seen_parent_ids.add(pid)
+        deduped_top_ids.append(cid)
+
+    out: list[dict[str, Any]] = []
+    for cid in deduped_top_ids:
         ch, doc = chunk_map[cid]
-        page = ch.meta.get("page") if isinstance(ch.meta, dict) else None
-        snippet = ch.content[:400] + ("…" if len(ch.content) > 400 else "")
+        pid = getattr(ch, "parent_chunk_id", None)
+        # 取父块作为展示内容（若存在）
+        effective_chunk = parent_chunk_map.get(pid) if pid is not None else None
+        content_chunk = effective_chunk if effective_chunk is not None else ch
+
+        page = content_chunk.meta.get("page") if isinstance(content_chunk.meta, dict) else None
+        full_content = content_chunk.content
+        snippet = full_content[:400] + ("…" if len(full_content) > 400 else "")
         v = vec_similarity.get(cid)
         t = trgm_similarity.get(cid)
         # 展示分数：混合检索时向量与文本路量纲不同，取 max 避免「文本很相关却显示低向量分」误导用户
@@ -412,13 +534,14 @@ def search_chunks(
         else:
             display_score = 0.0
         sec_h = None
-        if isinstance(ch.meta, dict):
-            raw_h = ch.meta.get("section_heading")
-            if isinstance(raw_h, str) and raw_h.strip():
-                sec_h = raw_h.strip()[:200]
+        meta_src = content_chunk.meta if isinstance(content_chunk.meta, dict) else {}
+        raw_h = meta_src.get("section_heading")
+        if isinstance(raw_h, str) and raw_h.strip():
+            sec_h = raw_h.strip()[:200]
         out.append(
             {
                 "chunk_id": ch.id,
+                "parent_chunk_id": str(pid) if pid is not None else None,
                 "source": doc.source,
                 "kb_collection": doc.kb_collection,
                 "doc_type": doc.doc_type,
@@ -430,7 +553,7 @@ def search_chunks(
                 "text_score": t,
                 "rrf_score": round(float(rrf.get(cid, 0.0)), 6),
                 "snippet": snippet,
-                "full_content": ch.content,
+                "full_content": full_content,
             }
         )
     return out

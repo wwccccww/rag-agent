@@ -97,6 +97,8 @@ class ChunkItem(BaseModel):
     chunk_index: int
     content: str
     meta: dict
+    is_index_chunk: bool = True
+    parent_chunk_id: UUID | None = None
 
 
 @router.get("/documents", response_model=list[DocItem])
@@ -165,24 +167,61 @@ def list_distinct_doc_types(
 
 
 @router.get("/documents/{doc_id}/chunks", response_model=list[ChunkItem])
-def list_chunks(doc_id: UUID, limit: int = Query(100, ge=1, le=500)) -> list[ChunkItem]:
+def list_chunks(
+    doc_id: UUID,
+    limit: int = Query(100, ge=1, le=500),
+    view: str = Query("parent", description="parent=仅父块（默认）；index=仅检索子块；all=全部"),
+) -> list[ChunkItem]:
+    """返回文档分块列表。
+    - **parent**（默认）：仅返回父块（is_index_chunk=False）；若文档无父块（旧格式入库），
+      自动回落到返回所有 is_index_chunk=True 的检索子块。
+    - **index**：仅返回检索子块（is_index_chunk=True）。
+    - **all**：返回所有块（父块 + 子块）。
+    """
     db = SessionLocal()
     try:
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404, "document not found")
-        rows = (
-            db.execute(
-                select(Chunk)
-                .where(Chunk.document_id == doc_id)
-                .order_by(Chunk.chunk_index)
-                .limit(limit)
+
+        base = select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.chunk_index)
+
+        if view == "all":
+            stmt = base
+        elif view == "index":
+            stmt = base.where(Chunk.is_index_chunk.is_(True))
+        else:
+            # parent 模式：优先显示父块；若无父块则回落为检索子块
+            parent_rows = (
+                db.execute(base.where(Chunk.is_index_chunk.is_(False)).limit(limit))
+                .scalars()
+                .all()
             )
-            .scalars()
-            .all()
-        )
+            if parent_rows:
+                return [
+                    ChunkItem(
+                        id=c.id,
+                        chunk_index=c.chunk_index,
+                        content=c.content,
+                        meta=c.meta or {},
+                        is_index_chunk=False,
+                        parent_chunk_id=None,
+                    )
+                    for c in parent_rows
+                ]
+            # 无父块：显示全部检索子块
+            stmt = base.where(Chunk.is_index_chunk.is_(True))
+
+        rows = db.execute(stmt.limit(limit)).scalars().all()
         return [
-            ChunkItem(id=c.id, chunk_index=c.chunk_index, content=c.content, meta=c.meta or {})
+            ChunkItem(
+                id=c.id,
+                chunk_index=c.chunk_index,
+                content=c.content,
+                meta=c.meta or {},
+                is_index_chunk=bool(c.is_index_chunk),
+                parent_chunk_id=c.parent_chunk_id,
+            )
             for c in rows
         ]
     finally:

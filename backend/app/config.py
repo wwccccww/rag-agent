@@ -76,6 +76,15 @@ class Settings(BaseSettings):
     # 触发同文档补位：该文档在 Top-K 中已有 chunk 的向量相似度至少达到此值（0–1）
     rag_same_doc_expand_min_vec: float = 0.32
 
+    # ── Parent-Child 分块 ─────────────────────────────────────────────────────
+    # 开启后：按 Markdown 层级先切「父块」（200–1500 字），再将每个父块内部切成更小的「子块」
+    # 子块参与向量/文本检索，命中后用父块喂给模型，兼顾检索精度与上下文完整性
+    chunk_parent_child: bool = True
+    # 父块最小字符数：若单节内容 >= 此值则单独成父块，不与邻节合并
+    chunk_parent_min_chars: int = 200
+    # 父块最大字符数：多个小节合并的父块总字符数上限
+    chunk_parent_max_chars: int = 1500
+
     # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
     # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）
     # SearXNG：自建实例（免费，支持代理），如 http://localhost:8888

@@ -12,7 +12,14 @@ type Doc = {
   chunk_count: number;
   created_at: string;
 };
-type Chunk = { id: string; chunk_index: number; content: string; meta: Record<string, unknown> };
+type Chunk = {
+  id: string;
+  chunk_index: number;
+  content: string;
+  meta: Record<string, unknown>;
+  is_index_chunk: boolean;
+  parent_chunk_id: string | null;
+};
 
 /** 与检索侧一致：来自分块时的标题面包屑（父级 / 子级），存于 meta.section_heading */
 function chunkSectionHeading(meta: Record<string, unknown>): string | null {
@@ -152,12 +159,15 @@ export default function DocumentsPage() {
     void load();
   }, [load]);
 
-  const openDoc = async (doc: Doc) => {
+  const [chunkView, setChunkView] = useState<"parent" | "index">("parent");
+
+  const openDoc = async (doc: Doc, view?: "parent" | "index") => {
     setSelected(doc);
     setChunks([]);
     setChunksLoading(true);
+    const v = view ?? chunkView;
     try {
-      const r = await fetch(`/api/documents/${doc.id}/chunks`);
+      const r = await fetch(`/api/documents/${doc.id}/chunks?view=${v}`);
       if (!r.ok) return;
       const data = await r.json().catch(() => []);
       setChunks(Array.isArray(data) ? data : []);
@@ -166,6 +176,11 @@ export default function DocumentsPage() {
     } finally {
       setChunksLoading(false);
     }
+  };
+
+  const switchChunkView = async (v: "parent" | "index") => {
+    setChunkView(v);
+    if (selected) await openDoc(selected, v);
   };
 
   const deleteDoc = async (doc: Doc) => {
@@ -386,12 +401,74 @@ export default function DocumentsPage() {
             <div className="field-label" style={{ padding: "20px 0" }}>加载中…</div>
           )}
 
+          {selected && !chunksLoading && (
+            <>
+              {/* 父块/子块视图切换 */}
+              <div style={{ display: "flex", gap: 8, marginBottom: 4 }}>
+                <button
+                  onClick={() => void switchChunkView("parent")}
+                  style={{
+                    padding: "4px 14px",
+                    borderRadius: 20,
+                    border: "1px solid var(--border)",
+                    background: chunkView === "parent" ? "var(--accent)" : "var(--panel)",
+                    color: chunkView === "parent" ? "#fff" : "var(--text)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: chunkView === "parent" ? 600 : 400,
+                  }}
+                  title="父块：完整语义段落，LLM 读取此内容作答"
+                >
+                  父块（LLM 读取）
+                </button>
+                <button
+                  onClick={() => void switchChunkView("index")}
+                  style={{
+                    padding: "4px 14px",
+                    borderRadius: 20,
+                    border: "1px solid var(--border)",
+                    background: chunkView === "index" ? "var(--accent)" : "var(--panel)",
+                    color: chunkView === "index" ? "#fff" : "var(--text)",
+                    cursor: "pointer",
+                    fontSize: 12,
+                    fontWeight: chunkView === "index" ? 600 : 400,
+                  }}
+                  title="检索子块：小粒度片段，用于向量/文本检索；命中后展开为对应父块"
+                >
+                  检索子块（向量检索）
+                </button>
+              </div>
+              <div style={{ fontSize: 11, color: "var(--text-dim)", marginBottom: 8 }}>
+                {chunkView === "parent"
+                  ? "父块：每个完整语义段落（LLM 实际读取的内容）。旧格式文档不区分父子，直接显示所有切块。"
+                  : "检索子块：粒度更细的片段，用于向量/文本检索；命中时自动展开为父块内容喂给 LLM。"}
+              </div>
+            </>
+          )}
+
           {selected && !chunksLoading && chunks.map((c) => {
             const crumb = chunkSectionHeading(c.meta);
+            const isParentChunk = !c.is_index_chunk;
             return (
-            <div key={c.id} style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel)", padding: 14 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+            <div key={c.id} style={{
+              border: `1px solid ${isParentChunk ? "var(--accent)" : "var(--border)"}`,
+              borderRadius: 10,
+              background: "var(--panel)",
+              padding: 14,
+              opacity: isParentChunk ? 1 : 0.9,
+            }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8, flexWrap: "wrap" }}>
                 <span className="badge blue">#{c.chunk_index}</span>
+                {isParentChunk && (
+                  <span className="badge" style={{ background: "var(--accent)", color: "#fff", fontSize: 10 }}>
+                    父块
+                  </span>
+                )}
+                {!isParentChunk && c.parent_chunk_id && (
+                  <span className="badge" style={{ fontSize: 10, color: "var(--text-dim)" }}>
+                    检索子块
+                  </span>
+                )}
                 {c.meta.page != null && (
                   <span className="badge">第 {String(c.meta.page)} 页</span>
                 )}
@@ -412,7 +489,7 @@ export default function DocumentsPage() {
                 color: "var(--text)",
                 margin: 0,
                 fontFamily: "inherit",
-                borderLeft: "2px solid var(--border)",
+                borderLeft: `2px solid ${isParentChunk ? "var(--accent)" : "var(--border)"}`,
                 paddingLeft: 12,
               }}>
                 {c.content}

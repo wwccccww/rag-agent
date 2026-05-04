@@ -101,6 +101,26 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning("[DB] documents kb indexes failed: %s", e)
 
+    # Parent-Child 分块：parent_chunk_id + is_index_chunk（幂等迁移，兼容旧库）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS parent_chunk_id "
+                "UUID REFERENCES chunks(id) ON DELETE SET NULL"
+            ))
+            conn.execute(text(
+                "ALTER TABLE chunks ADD COLUMN IF NOT EXISTS is_index_chunk "
+                "BOOLEAN NOT NULL DEFAULT TRUE"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_chunks_parent_chunk_id "
+                "ON chunks (parent_chunk_id) WHERE parent_chunk_id IS NOT NULL"
+            ))
+            conn.commit()
+        logging.info("[DB] chunks.parent_chunk_id / is_index_chunk ready")
+    except Exception as e:
+        logging.warning("[DB] alter chunks parent/index columns failed: %s", e)
+
     # HNSW 向量索引：大规模场景下比 IVFFlat 更稳定，查询时不需要预先 probe 调参
     # m=16 ef_construction=64 是官方推荐的均衡参数
     for table, col in [("chunks", "embedding"), ("memories", "embedding")]:
