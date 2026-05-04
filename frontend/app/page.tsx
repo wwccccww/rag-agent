@@ -581,7 +581,12 @@ export default function HomePage() {
         );
       }
       if (event === "final" && data && typeof data === "object") {
-        const d = data as { memory_writes?: string[]; session_title?: string; stats?: MsgStats };
+        const d = data as {
+          memory_writes?: string[];
+          session_title?: string;
+          stats?: MsgStats;
+          assistant_content?: string;
+        };
         const writes = d.memory_writes ?? [];
         if (writes.length > 0) {
           setMemToast(`💾 已记住：${writes[0]}`);
@@ -594,6 +599,11 @@ export default function HomePage() {
             saveSessions(capturedUserId, next);
             return next;
           });
+        }
+        if (typeof d.assistant_content === "string" && d.assistant_content.length > 0) {
+          setMessages((m) =>
+            m.map((msg) => (msg.id === aId ? { ...msg, content: d.assistant_content! } : msg))
+          );
         }
         if (d.stats) {
           setMessages((m) =>

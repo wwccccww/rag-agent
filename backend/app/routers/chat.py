@@ -16,6 +16,7 @@ from app.models import Message, SessionModel
 from app.schemas import AgentChatRequest, ChatStreamRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
+from app.services.citation_guard import sanitize_assistant_citations
 from app.services.rag import multi_query_search, search_memories
 from app.telemetry import telemetry
 from app.services.agent import run_agent
@@ -61,7 +62,8 @@ def _build_system_prompt(
         "  → 禁止用「不过」「但是」「我可以补充」等转折继续作答。\n"
         "  → 禁止使用你的训练知识来回答，即使你认为自己知道答案。\n\n"
         "规则二：如果下方【知识库片段】有明确相关的内容：\n"
-        "  → 基于片段内容回答，并标注引用（[S1]、[S2] 等）。\n\n"
+        "  → 基于片段内容回答，并标注引用（[S1]、[S2] 等）。\n"
+        "  → 仅当某片段中的关键表述（术语、表头、字段名、中文短语等）也出现在你的正文时，才可标注对应 [Sk]；禁止为凑数引用未用于推理的片段。\n\n"
         "规则三：如果用户的请求是纯创作/闲聊（写诗、写故事、翻译、计算等），与知识库无关：\n"
         "  → 可以正常完成，不受上述限制。\n\n"
         "判断标准：如果用户在问一个事实性/知识性问题，就适用规则一和规则二。\n"
@@ -235,7 +237,16 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             elapsed = time.perf_counter() - t_stream_start
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
 
-            db.add(Message(session_id=sid, role="assistant", content=full))
+            full_out, _removed = sanitize_assistant_citations(
+                full,
+                sources,
+                enabled=bool(sources) and settings.rag_citation_verify,
+                min_hits=settings.rag_citation_min_hits,
+                min_term_frac=settings.rag_citation_min_term_frac,
+                max_source_terms=settings.rag_citation_max_source_terms,
+            )
+
+            db.add(Message(session_id=sid, role="assistant", content=full_out))
             db.commit()
 
             mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
@@ -247,15 +258,16 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 sess.summary = session_title
                 db.commit()
 
-            yield _sse(
-                "final",
-                {
-                    "session_id": str(sid),
-                    "memory_writes": [mem_written] if mem_written else [],
-                    "stats": {"tokens": token_count, "tok_per_sec": tps},
-                    **({"session_title": session_title} if session_title else {}),
-                },
-            )
+            final_payload: dict = {
+                "session_id": str(sid),
+                "memory_writes": [mem_written] if mem_written else [],
+                "stats": {"tokens": token_count, "tok_per_sec": tps},
+            }
+            if session_title:
+                final_payload["session_title"] = session_title
+            if full_out != full:
+                final_payload["assistant_content"] = full_out
+            yield _sse("final", final_payload)
 
             # 摘要在 final 之后执行，不阻塞前端解锁
             _maybe_summarize(db, client, sess)
@@ -371,10 +383,19 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             elapsed = time.perf_counter() - t_stream_start
             tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
 
+            full_out, _removed = sanitize_assistant_citations(
+                full,
+                agent_sources,
+                enabled=bool(agent_sources) and settings.rag_citation_verify,
+                min_hits=settings.rag_citation_min_hits,
+                min_term_frac=settings.rag_citation_min_term_frac,
+                max_source_terms=settings.rag_citation_max_source_terms,
+            )
+
             db.add(Message(
                 session_id=sid,
                 role="assistant",
-                content=full,
+                content=full_out,
                 extra={"agent_steps": steps_trace} if steps_trace else None,
             ))
             db.commit()
@@ -388,15 +409,16 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 sess.summary = session_title
                 db.commit()
 
-            yield _sse(
-                "final",
-                {
-                    "session_id": str(sid),
-                    "memory_writes": [mem_written] if mem_written else [],
-                    "stats": {"tokens": token_count, "tok_per_sec": tps},
-                    **({"session_title": session_title} if session_title else {}),
-                },
-            )
+            final_payload: dict = {
+                "session_id": str(sid),
+                "memory_writes": [mem_written] if mem_written else [],
+                "stats": {"tokens": token_count, "tok_per_sec": tps},
+            }
+            if session_title:
+                final_payload["session_title"] = session_title
+            if full_out != full:
+                final_payload["assistant_content"] = full_out
+            yield _sse("final", final_payload)
 
             _maybe_summarize(db, client, sess)
         except Exception as e:

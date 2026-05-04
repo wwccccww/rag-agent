@@ -271,7 +271,7 @@ def search_chunks(
         for cid in ordered_rrf
         if _prefetch_passes_relevance_gate(cid, vec_similarity, trgm_similarity)
     ][: top_k * 2]
-    if len(prefetch_ids) < top_k:
+    if settings.rag_gate_relax_fill and len(prefetch_ids) < top_k:
         before = len(prefetch_ids)
         for cid in ordered_rrf:
             if cid not in prefetch_ids:
@@ -280,7 +280,7 @@ def search_chunks(
                 break
         if len(prefetch_ids) > before:
             logging.info(
-                "[RAG] relevance gate kept %d ids; padded to %d (top_k=%d)",
+                "[RAG] relevance gate kept %d ids; padded to %d (top_k=%d, relax_fill=true)",
                 before,
                 len(prefetch_ids),
                 top_k,

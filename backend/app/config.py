@@ -51,13 +51,20 @@ class Settings(BaseSettings):
     # 略收紧可减轻「勉强相关」的跨文档噪声（过严会降低召回，可按库调参）
     vector_distance_threshold: float = 0.38
     # pg_trgm word_similarity 下限（混合检索文本路）；过低易召回页脚、无关长文
-    trgm_word_similarity_min: float = 0.26
+    trgm_word_similarity_min: float = 0.27
     # 仅由文本路命中、无向量分时，要求更高的 word_similarity，抑制弱子串匹配污染
     rag_trgm_only_min_similarity: float = 0.32
     # 两路都有分时：若向量相似度与 trgm 同时偏弱则丢弃（减轻 RRF 把「双弱」拼进 Top-K）
     rag_dual_weak_filter: bool = True
     rag_dual_weak_max_vec: float = 0.46
-    rag_dual_weak_max_trgm: float = 0.24
+    rag_dual_weak_max_trgm: float = 0.23
+    # 门控后候选不足 top_k*2 时，是否用「未过门控」的 RRF 顺序补齐（提高召回，易混入弱相关片段）
+    rag_gate_relax_fill: bool = False
+    # 流式回复落库前：移除与正文无足够短语重叠的 [Sk] 引用（减轻模型乱标引用）
+    rag_citation_verify: bool = True
+    rag_citation_min_hits: int = 2
+    rag_citation_min_term_frac: float = 0.02
+    rag_citation_max_source_terms: int = 100
 
     # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
     # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）
