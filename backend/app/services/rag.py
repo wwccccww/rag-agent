@@ -3,11 +3,12 @@ import json
 import logging
 import uuid
 import time
+from collections import defaultdict
 from typing import Any
 import threading
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 
-from sqlalchemy import func, select
+from sqlalchemy import func, literal, select
 from sqlalchemy.orm import Session
 
 from app.config import settings
@@ -23,6 +24,80 @@ def sha256_bytes(data: bytes) -> str:
 
 
 _MIN_CHUNK_CHARS = 30  # 过短的 chunk 不含实质信息，跳过
+
+
+def _trgm_word_similarity_expr(query: str):
+    """正文 + 可选 section_heading 面包屑，取较大 word_similarity（利于标题里专有词）。"""
+    ws_body = func.word_similarity(query, Chunk.content)
+    if not settings.rag_trgm_include_section_heading:
+        return ws_body
+    sec = func.coalesce(Chunk.meta.op("->>")(literal("section_heading")), literal(""))
+    return func.greatest(ws_body, func.word_similarity(query, sec))
+
+
+def _maybe_swap_same_doc_from_prefetch(
+    top_ids: list[Any],
+    prefetch_ids: list[Any],
+    chunk_map: dict[Any, tuple[Any, Any]],
+    rrf: dict[Any, float],
+    vec_similarity: dict[Any, float],
+    trgm_similarity: dict[Any, float],
+    max_per_doc: int,
+) -> list[Any]:
+    """已命中某文档且向量或文本路不差时，从 prefetch 换入同文档兄弟片段，减轻「只命中一条需求、其余被教程占满」。"""
+    n_x = int(getattr(settings, "rag_same_doc_prefetch_extra", 0) or 0)
+    if n_x <= 0 or not top_ids:
+        return top_ids
+    thr_v = float(settings.rag_same_doc_expand_min_vec)
+    thr_t = float(settings.trgm_word_similarity_min) + 0.02
+    merged = list(top_ids)
+    merged_set = set(merged)
+    best_vec_by_doc: dict[str, float] = defaultdict(float)
+    best_trgm_by_doc: dict[str, float] = defaultdict(float)
+    for c in merged:
+        dk = str(chunk_map[c][1].id)
+        v = vec_similarity.get(c)
+        if v is not None:
+            best_vec_by_doc[dk] = max(best_vec_by_doc[dk], float(v))
+        t = trgm_similarity.get(c)
+        if t is not None:
+            best_trgm_by_doc[dk] = max(best_trgm_by_doc[dk], float(t))
+    strong_docs = {
+        d
+        for d in {str(chunk_map[c][1].id) for c in merged}
+        if best_vec_by_doc.get(d, 0.0) >= thr_v or best_trgm_by_doc.get(d, 0.0) >= thr_t
+    }
+    if not strong_docs:
+        return merged
+    extras: list[Any] = []
+    for cid in prefetch_ids:
+        if cid in merged_set:
+            continue
+        if cid not in chunk_map:
+            continue
+        dk = str(chunk_map[cid][1].id)
+        if dk not in strong_docs:
+            continue
+        extras.append(cid)
+        if len(extras) >= n_x * 4:
+            break
+    for x in extras[:n_x]:
+        xd = str(chunk_map[x][1].id)
+        cur_x = sum(1 for c in merged if str(chunk_map[c][1].id) == xd)
+        if cur_x >= max_per_doc:
+            continue
+        victims = sorted(merged, key=lambda c: float(rrf.get(c, 0.0)))
+        for v in victims:
+            vd = str(chunk_map[v][1].id)
+            if vd == xd:
+                continue
+            if float(rrf.get(x, 0.0)) + 1e-6 >= float(rrf.get(v, 0.0)) * 0.82:
+                i = merged.index(v)
+                merged[i] = x
+                merged_set.discard(v)
+                merged_set.add(x)
+                break
+    return merged
 
 
 def _prefetch_passes_relevance_gate(
@@ -201,7 +276,8 @@ def search_chunks(
         logging.info("[RAG] embed failed, fallback to trgm-only: %s", e)
         telemetry.record_timing("rag.embed_failed_ms", 0.0)
         qemb = None
-    candidate = top_k * 3  # 初步召回候选数
+    mult = max(2, int(getattr(settings, "rag_candidate_top_k_multiplier", 5) or 5))
+    candidate = top_k * mult  # 初步召回候选数
 
     # ── 1. 向量检索（带相关性阈值过滤）─────────────────────────
     vec_rows: list[Any] = []
@@ -235,7 +311,7 @@ def search_chunks(
     trgm_similarity: dict[Any, float] = {}
     if settings.hybrid_search:
         try:
-            wsim_expr = func.word_similarity(query, Chunk.content)
+            wsim_expr = _trgm_word_similarity_expr(query)
             trgm_min = float(settings.trgm_word_similarity_min)
             t_trgm = time.perf_counter()
             tstmt = (
@@ -300,8 +376,8 @@ def search_chunks(
     telemetry.record_timing("rag.fetch_ms", (time.perf_counter() - t_fetch) * 1000)
     chunk_map = {ch.id: (ch, doc) for ch, doc in rows}
 
-    # ── 5. 来源多样性过滤：每个文档最多贡献 MAX_PER_DOC 个 chunk ──
-    MAX_PER_DOC = 3
+    # ── 5. 来源多样性过滤：每个文档最多贡献 rag_max_chunks_per_doc 个 chunk ──
+    max_per_doc = max(1, int(getattr(settings, "rag_max_chunks_per_doc", 4) or 4))
     per_doc_count: dict[str, int] = {}
     top_ids: list[Any] = []
     for cid in prefetch_ids:
@@ -309,11 +385,15 @@ def search_chunks(
             continue
         _, doc = chunk_map[cid]
         dk = str(doc.id)
-        if per_doc_count.get(dk, 0) < MAX_PER_DOC:
+        if per_doc_count.get(dk, 0) < max_per_doc:
             per_doc_count[dk] = per_doc_count.get(dk, 0) + 1
             top_ids.append(cid)
         if len(top_ids) >= top_k:
             break
+
+    top_ids = _maybe_swap_same_doc_from_prefetch(
+        top_ids, prefetch_ids, chunk_map, rrf, vec_similarity, trgm_similarity, max_per_doc
+    )
 
     out: list[dict[str, Any]] = []
     for cid in top_ids:
@@ -322,8 +402,15 @@ def search_chunks(
         snippet = ch.content[:400] + ("…" if len(ch.content) > 400 else "")
         v = vec_similarity.get(cid)
         t = trgm_similarity.get(cid)
-        # 展示分数：优先展示向量相似度；若该片段主要由文本检索命中，则展示 word_similarity
-        display_score = v if v is not None else (t if t is not None else 0.0)
+        # 展示分数：混合检索时向量与文本路量纲不同，取 max 避免「文本很相关却显示低向量分」误导用户
+        if v is not None and t is not None:
+            display_score = round(max(float(v), float(t)), 4)
+        elif v is not None:
+            display_score = float(v)
+        elif t is not None:
+            display_score = float(t)
+        else:
+            display_score = 0.0
         sec_h = None
         if isinstance(ch.meta, dict):
             raw_h = ch.meta.get("section_heading")

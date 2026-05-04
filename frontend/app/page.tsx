@@ -1118,7 +1118,11 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
                   <div className="source-card-header">
                     <span className="source-card-file">[S{i + 1}] {s.source ?? "未知来源"}</span>
                     {s.page != null && <span className="source-card-meta">第 {s.page} 页</span>}
-                    {s.score != null && <span className="source-card-meta">相似度 {(s.score * 100).toFixed(0)}%</span>}
+                    {s.score != null && (
+                    <span className="source-card-meta" title="混合检索时取向量与文本匹配分的较高值">
+                      相关度 {(s.score * 100).toFixed(0)}%
+                    </span>
+                  )}
                   </div>
                   {s.section_heading?.trim() && (
                     <div className="source-card-section">节：{s.section_heading.trim()}</div>

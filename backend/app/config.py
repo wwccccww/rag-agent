@@ -65,6 +65,16 @@ class Settings(BaseSettings):
     rag_citation_min_hits: int = 2
     rag_citation_min_term_frac: float = 0.02
     rag_citation_max_source_terms: int = 100
+    # 混合检索：word_similarity 同时对正文与 meta.section_heading（面包屑）取 max，利于「管理员 / Vue」等在标题、小节名中的词
+    rag_trgm_include_section_heading: bool = True
+    # 向量+文本各自召回的候选条数 = top_k * 本系数（略大有利于同一需求文档多小节进入 RRF）
+    rag_candidate_top_k_multiplier: int = 5
+    # 单次检索同一文档最多返回几条片段（原 3；放宽利于同一需求文档多命中）
+    rag_max_chunks_per_doc: int = 4
+    # 若某文档已在 Top-K 中有「较强向量命中」，从 prefetch 队列再换入同文档尚未进 Top-K 的片段数上限（挤掉他文档弱 RRF 项）
+    rag_same_doc_prefetch_extra: int = 2
+    # 触发同文档补位：该文档在 Top-K 中已有 chunk 的向量相似度至少达到此值（0–1）
+    rag_same_doc_expand_min_vec: float = 0.32
 
     # Web 搜索后端（可选，国内环境 DuckDuckGo 可能被屏蔽）
     # 优先级：searxng_url > tavily_api_key > duckduckgo（fallback）
