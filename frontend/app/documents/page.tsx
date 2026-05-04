@@ -14,6 +14,12 @@ type Doc = {
 };
 type Chunk = { id: string; chunk_index: number; content: string; meta: Record<string, unknown> };
 
+/** 与检索侧一致：来自分块时的标题面包屑（父级 / 子级），存于 meta.section_heading */
+function chunkSectionHeading(meta: Record<string, unknown>): string | null {
+  const h = meta.section_heading;
+  return typeof h === "string" && h.trim() ? h.trim() : null;
+}
+
 export default function DocumentsPage() {
   const [docs, setDocs] = useState<Doc[]>([]);
   const [loading, setLoading] = useState(true);
@@ -372,7 +378,7 @@ export default function DocumentsPage() {
             <div className="empty-state">
               <div className="empty-state-icon">🔍</div>
               <h3>文档分块预览</h3>
-              <p>点击左侧文档，查看该文档被切分成的所有向量片段（chunks）内容与元数据。</p>
+              <p>点击左侧文档，查看该文档被切分成的所有向量片段（chunks）内容与元数据。Markdown 按标题分节时，每条片段上方会显示标题面包屑（与对话里「节：…」同源，来自 <code>section_heading</code>）。</p>
             </div>
           )}
 
@@ -380,7 +386,9 @@ export default function DocumentsPage() {
             <div className="field-label" style={{ padding: "20px 0" }}>加载中…</div>
           )}
 
-          {selected && !chunksLoading && chunks.map((c) => (
+          {selected && !chunksLoading && chunks.map((c) => {
+            const crumb = chunkSectionHeading(c.meta);
+            return (
             <div key={c.id} style={{ border: "1px solid var(--border)", borderRadius: 10, background: "var(--panel)", padding: 14 }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
                 <span className="badge blue">#{c.chunk_index}</span>
@@ -391,6 +399,11 @@ export default function DocumentsPage() {
                   {c.content.length} 字符
                 </span>
               </div>
+              {crumb && (
+                <div className="source-card-section" style={{ marginBottom: 10 }}>
+                  节：{crumb}
+                </div>
+              )}
               <pre style={{
                 whiteSpace: "pre-wrap",
                 wordBreak: "break-word",
@@ -405,7 +418,8 @@ export default function DocumentsPage() {
                 {c.content}
               </pre>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
