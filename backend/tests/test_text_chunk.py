@@ -3,10 +3,33 @@ from __future__ import annotations
 
 import unittest
 
-from app.services.text_extract import chunk_text
+from app.services.text_extract import _markdown_section_tuples, chunk_text
 
 
 class ChunkTextFenceTest(unittest.TestCase):
+    def test_nested_headings_produce_breadcrumb(self) -> None:
+        """#### 与 ##### 并存时节名含父级，便于 API 文档锚定。"""
+        md = """## 第二章 积分
+
+#### 2.3 修改积分规则
+
+##### 2.3.2 请求参数
+
+| id | number |
+| -- | ------ |
+
+##### 2.3.3 响应数据
+
+| code | number |
+"""
+        tuples = _markdown_section_tuples(md)
+        crumbs = {b for _, b in tuples if b}
+        self.assertTrue(any("2.3 修改积分规则" in c and "2.3.2 请求参数" in c for c in crumbs))
+        self.assertTrue(any("2.3 修改积分规则" in c and "2.3.3 响应数据" in c for c in crumbs))
+        pairs = chunk_text(md, 400, 40, filename="api.md", markdown_fence_aware=False)
+        heads = [m.get("section_heading", "") for _, m in pairs]
+        self.assertTrue(any("2.3 修改积分规则" in h and "2.3.2" in h for h in heads))
+
     def test_short_intro_merged_into_following_fence(self) -> None:
         """短「例如：」类引言与紧随围栏合并，避免单独小文本块。"""
         md = "## 五、一对多查询\n\n使用 `<collection>` 来进行连接，例如：\n\n```xml\n<a/>\n```\n"

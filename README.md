@@ -134,14 +134,14 @@ RRF 公式：`score = 1/(60 + 向量排名) + 1/(60 + 文本排名)`，`pg_trgm`
 
 **减轻「知识库污染」与弱相关 Top-K：** RRF 融合后增加一层**相关性门控**：若某片段**同时**具有向量分与 `word_similarity` 且二者都偏弱则丢弃；若**仅由文本路**命中（向量未进候选），则要求更高的 `word_similarity`，避免页脚、泛化长文被弱子串拉进结果。仍不足 `top_k` 时按原 RRF 顺序补齐。详见配置项 `RAG_DUAL_WEAK_*`、`TRGM_WORD_SIMILARITY_MIN`、`RAG_TRGM_ONLY_MIN_SIMILARITY`。
 
-**入库分块：** `.md` 或含 `##` 标题的正文默认**按标题分节**；节内识别 **Markdown `` ``` `` 围栏代码块**：围栏内不按句号/短窗切碎，整块尽量保留；仅当单块围栏仍超过 `CHUNK_MAX_CHARS` 时，在**换行边界**切为多段（子块之间不叠加以避免行内半截标签）。**短引言合并**：若紧邻围栏前的纯文字（不含 `` ``` ``）长度不超过 `CHUNK_MERGE_INTRO_BEFORE_FENCE_MAX_CHARS`（默认 320），会与下一围栏**合并为同一切块**（例如「五、一对多查询…例如：」与后面 `` ```xml `` 同块），减轻检索只命中标题、没有示例代码的情况。每节首标题写入 `meta.section_heading`，检索结果与对话 `[S*]` 中会带「节：…」；纯代码子块用节标题回落。**围栏续块前缀**：超长围栏按行切成多块时，**从第 2 块起**在正文前加一行 ``[节：节名 · 续]``（节名来自本分节首标题，长度上限见 `CHUNK_CONTINUATION_TITLE_MAX_CHARS`），便于只命中后续代码块时仍能关联小节；`CHUNK_FENCE_CONTINUATION_PREFIX=false` 可关。可调 `CHUNK_MAX_CHARS`、`CHUNK_OVERLAP`、`CHUNK_MARKDOWN_BY_HEADING`、`CHUNK_MARKDOWN_FENCE_AWARE`、`CHUNK_MERGE_INTRO_BEFORE_FENCE_MAX_CHARS`（`0` 关闭引言合并）、`CHUNK_FENCE_CONTINUATION_PREFIX`、`CHUNK_CONTINUATION_TITLE_MAX_CHARS`。
+**入库分块：** `.md` 或含 `##` 标题的正文默认**按标题分节**；节内识别 **Markdown `` ``` `` 围栏代码块**：围栏内不按句号/短窗切碎，整块尽量保留；仅当单块围栏仍超过 `CHUNK_MAX_CHARS` 时，在**换行边界**切为多段（子块之间不叠加以避免行内半截标签）。**短引言合并**：若紧邻围栏前的纯文字（不含 `` ``` ``）长度不超过 `CHUNK_MERGE_INTRO_BEFORE_FENCE_MAX_CHARS`（默认 320），会与下一围栏**合并为同一切块**（例如「五、一对多查询…例如：」与后面 `` ```xml `` 同块），减轻检索只命中标题、没有示例代码的情况。`meta.section_heading` 为**标题面包屑**（按 `#` 层级维护栈，如 ``#### 2.3 修改 / ##### 2.3.2 请求参数``，用 ` / ` 连接）；无栈信息时回落为节内首个 `#` 标题。检索与对话 `[S*]` 中「节：…」与此一致。**围栏续块前缀** ``[节：… · 续]`` 中的节名亦使用该面包屑（受 `CHUNK_CONTINUATION_TITLE_MAX_CHARS` 截断）。超长围栏按行切成多块时从第 2 块起加前缀；`CHUNK_FENCE_CONTINUATION_PREFIX=false` 可关。可调 `CHUNK_MAX_CHARS`、`CHUNK_OVERLAP`、`CHUNK_MARKDOWN_BY_HEADING`、`CHUNK_MARKDOWN_FENCE_AWARE`、`CHUNK_MERGE_INTRO_BEFORE_FENCE_MAX_CHARS`（`0` 关闭引言合并）、`CHUNK_FENCE_CONTINUATION_PREFIX`、`CHUNK_CONTINUATION_TITLE_MAX_CHARS`。
 
 **测试步骤（Markdown 围栏分块）：**
 
 1. 在仓库 `backend` 目录执行：`python -m unittest tests.test_text_chunk -v`。
 2. 可选：将含大段 `` ```xml `` 的 `.md` 重新入库后，在文档库中打开该文档的片段列表，确认超长 XML 仅在行边界断开、不出现 `artifactId>` 等半截标签行（需 `CHUNK_MARKDOWN_FENCE_AWARE=true`，默认已开）。
 
-**预期输出：** 步骤 1 显示 `Ran 5 tests ... OK`；步骤 2 中各片段内容在代码行语义上完整可读。
+**预期输出：** 步骤 1 显示 `Ran 6 tests ... OK`；步骤 2 中各片段内容在代码行语义上完整可读。
 
 **测试步骤：**
 

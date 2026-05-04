@@ -98,6 +98,22 @@ _MD_HEADING = re.compile(r"^#{1,6}\s+\S")
 _CLOSING_FENCE_RE = re.compile(r"^`{3,}\s*$")
 
 
+def _heading_line_level(line: str) -> int | None:
+    """与 _MD_HEADING 一致：行首 1–6 个 # 且其后有空白与正文。"""
+    st = line.strip()
+    if not _MD_HEADING.match(st):
+        return None
+    n = 0
+    for c in st:
+        if c == "#":
+            n += 1
+        else:
+            break
+    if n < 1 or n > 6:
+        return None
+    return n
+
+
 def _is_closing_fence_line(line: str) -> bool:
     """围栏结束行：整行（去首尾空白）仅由至少 3 个 ` 与可选空白组成。"""
     return bool(_CLOSING_FENCE_RE.match(line.strip()))
@@ -387,27 +403,56 @@ def _pack_mixed_units(
     return [c.strip() for c in chunks if c.strip()]
 
 
-def _markdown_sections(text: str) -> list[str]:
-    """按 Markdown 标题行分节，每节保留标题行在段首，便于向量携带主题。"""
+def _markdown_section_tuples(text: str) -> list[tuple[str, str | None]]:
+    """按 Markdown 标题行分节；每节附带「标题面包屑」（父级 # 标题 / 当前节标题，不含 #）。
+
+    用于 `#####` 等小节在向量与 meta 中仍能关联上级 `####` 接口段落。
+    """
     text = text.replace("\r\n", "\n").strip()
     if not text:
         return []
     lines = text.split("\n")
-    sections: list[str] = []
+    out: list[tuple[str, str | None]] = []
     buf: list[str] = []
+    stack: list[tuple[int, str]] = []
+
+    def crumb_str() -> str | None:
+        if not stack:
+            return None
+        parts = [t[1] for t in stack if t[1]]
+        return " / ".join(parts) if parts else None
+
     for line in lines:
-        if _MD_HEADING.match(line.strip()) and buf:
+        st = line.strip()
+        is_h = bool(_MD_HEADING.match(st))
+        lev = _heading_line_level(line) if is_h else None
+        if is_h and buf:
             sec = "\n".join(buf).strip()
             if sec:
-                sections.append(sec)
+                out.append((sec, crumb_str()))
+            if lev is not None:
+                while stack and stack[-1][0] >= lev:
+                    stack.pop()
+                stack.append((lev, st[lev:].strip()[:200]))
             buf = [line]
+        elif is_h and not buf:
+            if lev is not None:
+                while stack and stack[-1][0] >= lev:
+                    stack.pop()
+                stack.append((lev, st[lev:].strip()[:200]))
+            buf.append(line)
         else:
             buf.append(line)
     if buf:
         sec = "\n".join(buf).strip()
         if sec:
-            sections.append(sec)
-    return sections if sections else [text]
+            out.append((sec, crumb_str()))
+    return out if out else [(text, None)]
+
+
+def _markdown_sections(text: str) -> list[str]:
+    """兼容：仅返回分节正文列表。"""
+    return [s for s, _ in _markdown_section_tuples(text)]
 
 
 def chunk_text(
@@ -427,7 +472,7 @@ def chunk_text(
     markdown_fence_aware 且判定为 Markdown 时，节内识别 ``` 围栏，围栏内不按句号/短窗切分，
     超长围栏仅在换行处切；可选将不超过 merge_intro_before_fence_max_chars 的紧邻引言并入围栏单元，
     避免「例如：」单独成块。超长围栏多块时可选为续块加 ``[节：… · 续]`` 前缀（fence_continuation_prefix）。
-    每节首标题写入 meta.section_heading（纯代码块用节标题回落）。
+    每节 `meta.section_heading` 优先为**标题面包屑**（如 ``父级小节 / 当前 #####``）；无栈信息时回落为节内首个 `#` 标题。
     """
     text = text.strip()
     if not text:
@@ -435,13 +480,13 @@ def chunk_text(
 
     use_md = markdown_by_heading and _looks_like_markdown(text, filename)
     if use_md:
-        raw_sections = _markdown_sections(text)
+        raw_section_items = _markdown_section_tuples(text)
     else:
-        raw_sections = [text]
+        raw_section_items = [(text, None)]
 
     pieces: list[tuple[str, str | None]] = []
-    for sec in raw_sections:
-        sec_heading = _first_heading_in_section(sec)
+    for sec, sec_breadcrumb in raw_section_items:
+        sec_heading = (sec_breadcrumb.strip() if sec_breadcrumb and sec_breadcrumb.strip() else None) or _first_heading_in_section(sec)
         if use_md and markdown_fence_aware:
             units = _section_to_mixed_units(sec)
             if merge_intro_before_fence_max_chars > 0:
@@ -478,7 +523,8 @@ def chunk_text(
             except (ValueError, IndexError):
                 page = None
         fb = sec_fallback.strip()[:200] if sec_fallback and sec_fallback.strip() else None
-        h = _heading_from_chunk_start(c) or fb
+        # 分节已给出面包屑时优先写入 meta，避免块首仅 ##### 时丢失父级 ####
+        h = fb or _heading_from_chunk_start(c)
         meta: dict = {"chunk_index": idx, "page": page}
         if h:
             meta["section_heading"] = h[:200]
