@@ -82,6 +82,64 @@ npm run dev
 
 ---
 
+### 0-B. 知识图谱增强记忆（轻量级，存储于 PostgreSQL）
+
+在原有扁平向量记忆之上引入**实体-关系图谱**，无需新增数据库，全部存储在 PostgreSQL。
+
+**新增数据表：**
+
+| 表 | 说明 |
+|---|---|
+| `kg_entities` | 实体节点：name / entity_type（person/project/technology…）/ embedding（pgvector 去重） |
+| `kg_relations` | 关系边：subject --[predicate]--> object / confidence / source_memory_id |
+| `memories.confidence` | 记忆置信度（0.0–1.0） |
+| `memories.valid_until` | 有效期（event 类记忆可设过期，NULL 永久有效） |
+
+**工作流程：**
+
+```
+用户："我同事李雷负责认证模块，他用 Go 语言"
+        ↓ maybe_auto_memory
+  [记忆] (fact) 同事李雷负责认证模块，使用 Go 语言
+        ↓ extract_triples (KG，额外一次 LLM)
+  实体: 李雷(person), 认证模块(project), Go(technology)
+  关系: 李雷 --[负责]--> 认证模块
+        李雷 --[使用]--> Go
+
+用户（下次）："认证模块用什么语言写的？"
+        ↓ search_memories
+  [向量检索] 最相关记忆条目
+  [图谱展开] 向量找到「认证模块」→ 展开 2 跳
+    → 李雷(person) --[负责]--> 认证模块(project)
+    → 李雷(person) --[使用]--> Go(technology)   ← 答案在此
+```
+
+**新增 API：**
+
+| 端点 | 说明 |
+|---|---|
+| `GET /v1/kg/entities?user_id=` | 列出所有实体节点 |
+| `GET /v1/kg/relations?user_id=` | 列出所有关系边（含主/宾语名称）|
+| `DELETE /v1/kg/entities/{id}` | 删除实体及其所有关联关系 |
+
+**配置项（`.env`）：**
+
+```
+KG_ENABLED=true                   # 总开关（false 退化为纯向量搜索）
+KG_TRIPLE_EXTRACT_ENABLED=true    # 写记忆时同步提取三元组
+KG_ENTITY_DEDUP_THRESHOLD=0.15    # 实体去重相似度阈值
+KG_GRAPH_HOPS=2                   # 展开跳数（1-3）
+```
+
+**测试步骤：**
+
+1. 发送（Agent 模式）：`我的同事李雷负责认证服务，他使用 Go 语言，团队在北京`
+2. `GET http://127.0.0.1:8000/v1/kg/entities?user_id=demo` 查看提取的实体
+3. `GET http://127.0.0.1:8000/v1/kg/relations?user_id=demo` 查看关系图谱
+4. 发送：`认证服务用什么语言？` → Agent 调用 `recall_user_memory` 时会触发图谱展开，LLM 得到"李雷 --[使用]--> Go"这条关系后直接回答
+
+---
+
 ### 0-A. 安全防护（Prompt 注入工程化应对）
 
 系统内置四层安全防护，覆盖所有攻击面：
@@ -316,7 +374,8 @@ python test_hybrid_search.py "/user PUT"
 
 ### 1.1 知识库分区（`kb_collection`）与文档类型（`doc_type`）
 
-- **`kb_collection`**：硬分区，检索与列表只在该分区内进行；未传请求字段时使用环境变量 `DEFAULT_KB_COLLECTION`（默认 `default`）。分区名仅允许 `a-zA-Z0-9_-`，长度 1–64。同一文件内容可在不同分区各入库一份（去重键为「内容 SHA256 + 分区」）。
+- **`kb_collection`**：硬分区，检索与列表只在该分区内进行；未传请求字段时使用环境变量 `DEFAULT_KB_COLLECTION`（默认 `default`）。分区名仅允许 `a-zA-Z0-9_-`，长度 1–64。同一文件内容可在不同分区各入库一份（去重键为「内容 SHA256 + 分区」）。**入库页若填写了非法分区名（如纯中文）会 400**；前端已在校验，也可留空走 `default`。
+- **粘贴文本入库 400**：除上述分区/`doc_type` 非法外，若曾出现「分块后无可用片段」，后端已对**极短正文**增加线性分块与单条兜底；仍失败时请查看响应 JSON 的 `detail` 字段（如 `empty document text`）。
 - **`doc_type` / `doc_types`**：文档级类型标签，入库时写入 `Document.doc_type`；对话请求可传 `doc_types` 数组（最多 8 个），仅检索所列类型（不传则不过滤）。**不限于四个预设**：任意符合 `^[a-z0-9_-]{1,32}$` 的 slug 均可（提交前会转小写并将空白转为连字符）；纯符号/中文等无法得到合法 slug 时接口返回 **400**。检索过滤列表中的非法项会被静默忽略。
 - **入库后改分区/类型**：无需重新向量化。调用 `PATCH /v1/documents/{id}` 或 `PATCH /v1/documents/batch` 更新 `Document` 行并同步各 chunk 的 `meta` 中的 `kb_collection`/`doc_type`。若将文档移入某分区而该分区已存在**相同内容 SHA** 的另一文档，返回 **409**（与入库去重 `(sha256, kb_collection)` 一致）。
 

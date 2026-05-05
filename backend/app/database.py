@@ -121,9 +121,68 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning("[DB] alter chunks parent/index columns failed: %s", e)
 
+    # Memory 表：新增 confidence / valid_until / updated_at 列（幂等迁移）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE memories ADD COLUMN IF NOT EXISTS confidence FLOAT NOT NULL DEFAULT 1.0"
+            ))
+            conn.execute(text(
+                "ALTER TABLE memories ADD COLUMN IF NOT EXISTS valid_until TIMESTAMPTZ DEFAULT NULL"
+            ))
+            conn.execute(text(
+                "ALTER TABLE memories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()"
+            ))
+            conn.commit()
+        logging.info("[DB] memories.confidence / valid_until / updated_at columns ready")
+    except Exception as e:
+        logging.warning("[DB] alter memories columns failed: %s", e)
+
+    # 知识图谱：实体表额外列（幂等，兼容旧库）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE kg_entities ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()"
+            ))
+            conn.commit()
+        logging.info("[DB] kg_entities.updated_at column ready")
+    except Exception as e:
+        logging.warning("[DB] alter kg_entities failed: %s", e)
+
+    # 知识图谱：关系表额外列
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "ALTER TABLE kg_relations ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT now()"
+            ))
+            conn.commit()
+        logging.info("[DB] kg_relations.updated_at column ready")
+    except Exception as e:
+        logging.warning("[DB] alter kg_relations failed: %s", e)
+
+    # 知识图谱：GIN 索引加速 attrs JSONB 查询
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_kg_entities_attrs "
+                "ON kg_entities USING GIN (attrs)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_kg_entities_user_type "
+                "ON kg_entities (user_id, entity_type)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_kg_relations_predicate "
+                "ON kg_relations (user_id, predicate)"
+            ))
+            conn.commit()
+        logging.info("[DB] kg_entities / kg_relations indexes ready")
+    except Exception as e:
+        logging.warning("[DB] kg indexes failed: %s", e)
+
     # HNSW 向量索引：大规模场景下比 IVFFlat 更稳定，查询时不需要预先 probe 调参
     # m=16 ef_construction=64 是官方推荐的均衡参数
-    for table, col in [("chunks", "embedding"), ("memories", "embedding")]:
+    for table, col in [("chunks", "embedding"), ("memories", "embedding"), ("kg_entities", "embedding")]:
         idx_name = f"idx_{table}_{col}_hnsw"
         try:
             with engine.connect() as conn:

@@ -5,6 +5,7 @@ import {
   PRESET_DOC_TYPES,
   PRESET_DOC_TYPE_SET,
   slugDocType,
+  slugKbCollection,
   USER_ID_KEY,
   loadDocShortcutsForUser,
 } from "@/lib/kb";
@@ -149,6 +150,24 @@ export default function IngestPage() {
   const onDragOver = (e: React.DragEvent) => { e.preventDefault(); setOver(true); };
   const onDragLeave = () => setOver(false);
 
+  /** kb_collection 非空时必须可规范为后端允许的 slug，否则返回错误文案 */
+  const kbCollectionFormError = (): string | null => {
+    const raw = kbCollection.trim();
+    if (!raw) return null;
+    const kb = slugKbCollection(raw);
+    if (!kb) {
+      return "kb_collection 非法：仅允许 1–64 位英文字母、数字、下划线、连字符（不能为纯中文或空格）；留空则使用 default";
+    }
+    return null;
+  };
+
+  const appendIngestMeta = (fd: FormData) => {
+    if (title.trim()) fd.append("title", title.trim());
+    const kb = slugKbCollection(kbCollection.trim());
+    if (kb) fd.append("kb_collection", kb);
+    fd.append("doc_type", docType);
+  };
+
   const canSubmit = () => {
     if (loading) return false;
     if (mode === "file") return files.length > 0 && files.some((e) => isExtOk(e.file.name) && e.file.size <= MAX_MB * 1024 * 1024);
@@ -158,6 +177,11 @@ export default function IngestPage() {
   };
 
   const submitFiles = async () => {
+    const kbErr = kbCollectionFormError();
+    if (kbErr) {
+      setSingleResult({ type: "error", text: kbErr });
+      return;
+    }
     setLoading(true);
     for (let i = 0; i < files.length; i++) {
       const entry = files[i];
@@ -173,9 +197,7 @@ export default function IngestPage() {
       try {
         const fd = new FormData();
         fd.append("file", entry.file);
-        if (title.trim()) fd.append("title", title.trim());
-        if (kbCollection.trim()) fd.append("kb_collection", kbCollection.trim());
-        fd.append("doc_type", docType);
+        appendIngestMeta(fd);
         const r = await fetch("/api/ingest", { method: "POST", body: fd });
         const txt = await r.text();
         if (r.ok) {
@@ -197,14 +219,17 @@ export default function IngestPage() {
   };
 
   const submitSingle = async () => {
+    const kbErr = kbCollectionFormError();
+    if (kbErr) {
+      setSingleResult({ type: "error", text: kbErr });
+      return;
+    }
     setLoading(true);
     setSingleResult({ type: "info", text: mode === "url" ? "正在抓取网页并向量化…" : "正在向量化并写入 pgvector…" });
     const fd = new FormData();
     if (mode === "url") fd.append("url", urlInput.trim());
     else fd.append("text", pasteText.trim());
-    if (title.trim()) fd.append("title", title.trim());
-    if (kbCollection.trim()) fd.append("kb_collection", kbCollection.trim());
-    fd.append("doc_type", docType);
+    appendIngestMeta(fd);
     try {
       const r = await fetch("/api/ingest", { method: "POST", body: fd });
       const txt = await r.text();

@@ -27,6 +27,29 @@ def sha256_bytes(data: bytes) -> str:
 _MIN_CHUNK_CHARS = 30  # 过短的 chunk 不含实质信息，跳过
 
 
+def _linear_chunks_relaxed(text: str, **chunk_kwargs: Any) -> list[tuple[str, dict]]:
+    """
+    当层级分块过滤后为空（常见于粘贴文本过短 < _MIN_CHUNK_CHARS）时，
+    用线性分块且允许最短 1 字符；若仍为空则将非空全文作为单条 chunk（上限放宽）。
+
+    chunk_kwargs：与 ingest_bytes 中 chunk_text 相同（含 filename、markdown_by_heading 等）。
+    """
+    pairs = chunk_text(
+        text,
+        settings.chunk_max_chars,
+        settings.chunk_overlap,
+        **chunk_kwargs,
+    )
+    relaxed = [(c, m) for c, m in pairs if len(c.strip()) >= 1]
+    if relaxed:
+        return relaxed
+    t = text.strip()
+    if not t:
+        return []
+    cap = max(settings.chunk_max_chars * 4, 8000)
+    return [(t[:cap], {"section_heading": "", "chunk_index": 0})]
+
+
 def _trgm_word_similarity_expr(query: str):
     """正文 + 可选 section_heading 面包屑，取较大 word_similarity（利于标题里专有词）。"""
     ws_body = func.word_similarity(query, Chunk.content)
@@ -244,8 +267,27 @@ def ingest_bytes(
             (pc, pm, ch_list) for pc, pm, ch_list in hierarchical if len(pc.strip()) >= _MIN_CHUNK_CHARS
         ]
         if not hierarchical:
-            db.rollback()
-            raise ValueError("document has no usable content after chunking")
+            # 短粘贴 / 极短正文：层级父块全被过滤时用线性分块或单条兜底
+            linear = _linear_chunks_relaxed(text, **common_kwargs)
+            if not linear:
+                db.rollback()
+                raise ValueError("empty document text")
+            for content, meta in linear:
+                emb = ollama.embed(content[:8000], apply_embed_budget=False)
+                meta_out = dict(meta) if isinstance(meta, dict) else {}
+                meta_out.update({"doc_type": dtype, "kb_collection": coll})
+                db.add(Chunk(
+                    document_id=doc.id,
+                    chunk_index=int(meta.get("chunk_index", n)),
+                    content=content,
+                    meta=meta_out,
+                    embedding=emb,
+                    is_index_chunk=True,
+                ))
+                n += 1
+            db.commit()
+            logging.info("[RAG] ingested %s → %d chunks (relaxed linear mode)", filename, n)
+            return doc.id, n
 
         for parent_content, parent_meta, children in hierarchical:
             # 子块为空说明该节不需要父子分离，单块直接作为 is_index_chunk=True 入库
@@ -313,8 +355,11 @@ def ingest_bytes(
         )
         pairs = [(c, m) for c, m in pairs if len(c.strip()) >= _MIN_CHUNK_CHARS]
         if not pairs:
-            db.rollback()
-            raise ValueError("document has no usable content after chunking")
+            linear = _linear_chunks_relaxed(text, **common_kwargs)
+            if not linear:
+                db.rollback()
+                raise ValueError("empty document text")
+            pairs = linear
 
         for content, meta in pairs:
             emb = ollama.embed(content[:8000], apply_embed_budget=False)
@@ -686,22 +731,56 @@ def multi_query_search(
     )[:top_k]
 
 
-def search_memories(db: Session, ollama: OllamaClient, user_id: str, query: str, top_k: int = 5) -> list[str]:
+def search_memories(
+    db: Session,
+    ollama: OllamaClient,
+    user_id: str,
+    query: str,
+    top_k: int = 5,
+    kg_hops: int = 2,
+) -> list[str]:
+    """
+    两段式记忆检索：
+      1. 向量检索 Memory 表（扁平记忆），过滤已过期 + 按置信度加权
+      2. 知识图谱展开：向量检索 KGEntity → graph_expand N 跳邻域
+
+    Returns:
+        list[str]，每条为格式化的记忆或图谱关系描述。
+    """
+    from app.config import settings  # noqa: PLC0415
+    from app.services.kg import search_kg  # noqa: PLC0415
+    from datetime import datetime, timezone  # noqa: PLC0415
+
     try:
         qemb = ollama.embed(query[:8000])
     except Exception as e:
         logging.info("[Memory] embed failed, skip memory recall: %s", e)
         telemetry.record_timing("memory.embed_failed_ms", 0.0)
         return []
+
+    # ── 1. 扁平记忆向量检索（过期过滤 + 置信度排序）──────────────────────
     dist_expr = Memory.embedding.cosine_distance(qemb)
+    now = datetime.now(timezone.utc)
     stmt = (
         select(Memory, dist_expr.label("dist"))
         .where(Memory.user_id == user_id)
+        # 过滤已过期记忆（valid_until IS NULL 表示永久有效）
+        .where((Memory.valid_until == None) | (Memory.valid_until > now))  # noqa: E711
         .order_by(dist_expr)
         .limit(top_k)
     )
     rows = db.execute(stmt).all()
     lines: list[str] = []
-    for mem, _dist in rows:
-        lines.append(f"- ({mem.kind}) {mem.content}")
+    for mem, dist in rows:
+        conf_tag = f" [置信度:{mem.confidence:.1f}]" if mem.confidence < 1.0 else ""
+        lines.append(f"- ({mem.kind}){conf_tag} {mem.content}")
+
+    # ── 2. 知识图谱展开（仅在 kg_enabled 时执行）──────────────────────────
+    if settings.kg_enabled:
+        hops = kg_hops if kg_hops != 2 else settings.kg_graph_hops
+        kg_lines = search_kg(db, ollama, user_id, query, top_k_entities=5, hops=hops)
+        if kg_lines:
+            lines.append("【知识图谱关系】")
+            lines.extend(f"  {l}" for l in kg_lines)
+
     return lines

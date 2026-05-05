@@ -132,5 +132,17 @@ class Settings(BaseSettings):
     # Reflection：每轮工具执行后评估信息是否充足，充足则提前终止循环（会增加一次 LLM 调用耗时）
     agent_reflection_enabled: bool = True
 
+    # ── 知识图谱（轻量级，存储于 PostgreSQL）──────────────────────────────────
+    # 总开关：False 时跳过所有 KG 操作（search_memories 退化为纯向量搜索）
+    kg_enabled: bool = True
+    # 三元组提取：写入记忆时是否同步提取实体关系（会额外增加一次 LLM 调用）
+    kg_triple_extract_enabled: bool = True
+    # 向量检索实体去重阈值（余弦距离）：距离 < 此值视为同一实体
+    kg_entity_dedup_threshold: float = 0.15
+    # 图谱展开跳数：从种子实体出发展开几跳邻域（1-3 跳，跳数越多上下文越丰富但越慢）
+    kg_graph_hops: int = 2
+    # 图谱实体向量检索相关性阈值（余弦距离）：超过此值的实体不作为展开种子
+    kg_entity_distance_threshold: float = 0.5
+
 
 settings = Settings()

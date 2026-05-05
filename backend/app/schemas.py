@@ -115,7 +115,9 @@ class SourceItem(BaseModel):
 
 class MemoryCreate(BaseModel):
     user_id: str = "demo"
-    kind: Literal["fact", "profile", "decision"] = "fact"
+    kind: Literal[
+        "fact", "identity", "preference", "skill", "relation", "event", "goal"
+    ] = "fact"
     content: str
 
 
@@ -123,4 +125,25 @@ class MemoryItem(BaseModel):
     id: UUID
     kind: str
     content: str
+    confidence: float = 1.0
+    valid_until: str | None = None
+    created_at: str
+
+
+class KGEntityItem(BaseModel):
+    id: UUID
+    name: str
+    entity_type: str
+    attrs: dict
+    created_at: str
+
+
+class KGRelationItem(BaseModel):
+    id: UUID
+    subject_id: UUID
+    subject_name: str
+    predicate: str
+    object_id: UUID
+    object_name: str
+    confidence: float
     created_at: str

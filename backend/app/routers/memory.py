@@ -8,8 +8,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
-from app.models import Memory
-from app.schemas import MemoryCreate, MemoryItem
+from app.models import KGEntity, KGRelation, Memory
+from app.schemas import KGEntityItem, KGRelationItem, MemoryCreate, MemoryItem
 from app.services.ollama import OllamaClient
 from app.services.security import sanitize_memory_content
 
@@ -36,11 +36,87 @@ def create_memory(body: MemoryCreate) -> dict:
 def list_memory(user_id: str = Query("demo"), limit: int = Query(50, ge=1, le=200)) -> list[MemoryItem]:
     db = SessionLocal()
     try:
-        rows = db.execute(select(Memory).where(Memory.user_id == user_id).order_by(Memory.created_at.desc()).limit(limit)).scalars().all()
+        rows = db.execute(
+            select(Memory).where(Memory.user_id == user_id).order_by(Memory.created_at.desc()).limit(limit)
+        ).scalars().all()
         return [
-            MemoryItem(id=m.id, kind=m.kind, content=m.content, created_at=m.created_at.isoformat())
+            MemoryItem(
+                id=m.id,
+                kind=m.kind,
+                content=m.content,
+                confidence=m.confidence,
+                valid_until=m.valid_until.isoformat() if m.valid_until else None,
+                created_at=m.created_at.isoformat(),
+            )
             for m in rows
         ]
+    finally:
+        db.close()
+
+
+@router.get("/kg/entities", response_model=list[KGEntityItem])
+def list_kg_entities(user_id: str = Query("demo"), limit: int = Query(50, ge=1, le=200)) -> list[KGEntityItem]:
+    """列出知识图谱中所有实体节点"""
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(KGEntity).where(KGEntity.user_id == user_id).order_by(KGEntity.updated_at.desc()).limit(limit)
+        ).scalars().all()
+        return [
+            KGEntityItem(
+                id=e.id,
+                name=e.name,
+                entity_type=e.entity_type,
+                attrs=e.attrs,
+                created_at=e.created_at.isoformat(),
+            )
+            for e in rows
+        ]
+    finally:
+        db.close()
+
+
+@router.get("/kg/relations", response_model=list[KGRelationItem])
+def list_kg_relations(user_id: str = Query("demo"), limit: int = Query(50, ge=1, le=200)) -> list[KGRelationItem]:
+    """列出知识图谱中所有关系边"""
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(KGRelation)
+            .where(KGRelation.user_id == user_id)
+            .order_by(KGRelation.confidence.desc(), KGRelation.created_at.desc())
+            .limit(limit)
+        ).scalars().all()
+        result = []
+        for r in rows:
+            subj = db.get(KGEntity, r.subject_id)
+            obj = db.get(KGEntity, r.object_id)
+            result.append(KGRelationItem(
+                id=r.id,
+                subject_id=r.subject_id,
+                subject_name=subj.name if subj else "?",
+                predicate=r.predicate,
+                object_id=r.object_id,
+                object_name=obj.name if obj else "?",
+                confidence=r.confidence,
+                created_at=r.created_at.isoformat(),
+            ))
+        return result
+    finally:
+        db.close()
+
+
+@router.delete("/kg/entities/{entity_id}")
+def delete_kg_entity(entity_id: UUID, user_id: str = Query("demo")) -> dict:
+    """删除实体及其所有关联关系"""
+    db = SessionLocal()
+    try:
+        e = db.get(KGEntity, entity_id)
+        if not e or e.user_id != user_id:
+            raise HTTPException(404, "entity not found")
+        db.delete(e)
+        db.commit()
+        return {"ok": True}
     finally:
         db.close()
 
@@ -125,9 +201,29 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
             existing_mem.content = content
             existing_mem.embedding = emb
             db.commit()
+            mem_id = existing_mem.id
         else:
-            db.add(Memory(user_id=user_id, kind="fact", content=content, embedding=emb))
+            new_mem = Memory(user_id=user_id, kind="fact", content=content, embedding=emb)
+            db.add(new_mem)
             db.commit()
+            db.refresh(new_mem)
+            mem_id = new_mem.id
+
+        # ── 知识图谱三元组提取（可选）──────────────────────────────────────
+        try:
+            from app.config import settings as _settings  # noqa: PLC0415
+            if _settings.kg_enabled and _settings.kg_triple_extract_enabled:
+                from app.services.kg import extract_triples, save_triples  # noqa: PLC0415
+                entities, relations = extract_triples(client, user_text)
+                if entities or relations:
+                    save_triples(
+                        db, client, user_id,
+                        entities, relations,
+                        source_memory_id=mem_id,
+                        dedup_threshold=_settings.kg_entity_dedup_threshold,
+                    )
+        except Exception as kg_err:
+            logging.warning("[Memory] KG triple extraction failed (non-fatal): %s", kg_err)
 
         return content
     except Exception:
