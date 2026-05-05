@@ -105,5 +105,18 @@ class Settings(BaseSettings):
     # 搜索超时（秒），防止网络不通时长时间阻塞
     web_search_timeout: int = 8
 
+    # ── Agent 扩展工具 ─────────────────────────────────────────────────────────
+    # python_repl：Python 代码沙箱执行（子进程隔离）
+    # 执行超时（秒）；超时后强制终止子进程
+    python_repl_timeout: int = 15
+    # 最大输出字符数；超出部分截断
+    python_repl_max_output_chars: int = 2000
+
+    # fetch_url：网页正文抓取
+    # 请求超时（秒）
+    fetch_url_timeout: int = 15
+    # 提取正文最大字符数；超出部分截断（避免超长网页占满上下文）
+    fetch_url_max_chars: int = 4000
+
 
 settings = Settings()

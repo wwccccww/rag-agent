@@ -2,7 +2,7 @@
 
 偏后端作品：FastAPI 提供 SSE 流式对话与文档入库；Postgres + pgvector 存向量；Ollama 本地 `qwen2.5:7b` 生成、`nomic-embed-text` 向量化；Next.js（App Router）作为 BFF 代理 SSE，便于演示。
 
-**核心亮点：Tool Calling Agent**——对话界面可切换到 Agent 模式，LLM 自主决策是否调用 `search_knowledge_base`、`recall_user_memory`、`get_current_datetime`、`web_search` 等工具，实现真正的 ReAct 推理循环，而非无脑检索。Agent 每步决策均会捕获 LLM 的推理文本（Thought）并持久化轨迹，刷新页面后可恢复。
+**核心亮点：Tool Calling Agent**——对话界面可切换到 Agent 模式，LLM 自主决策是否调用 `search_knowledge_base`、`recall_user_memory`、`get_current_datetime`、`web_search`、`python_repl`、`fetch_url`、`calculate` 等 7 个工具，实现真正的 ReAct 推理循环，而非无脑检索。Agent 每步决策均会捕获 LLM 的推理文本（Thought）并持久化轨迹，刷新页面后可恢复。
 
 ## 架构
 
@@ -90,7 +90,10 @@ LLM 决策（chat_with_tools，不流式）
   ├── 调用 search_knowledge_base  → 执行混合检索 → 结果注入上下文
   ├── 调用 recall_user_memory     → 查询向量记忆 → 结果注入上下文
   ├── 调用 get_current_datetime   → 获取当前时间 → 结果注入上下文
-  ├── 调用 web_search             → DuckDuckGo 搜索 → 结果注入上下文
+  ├── 调用 web_search             → Tavily/SearXNG/DuckDuckGo 搜索 → 结果注入上下文
+  ├── 调用 python_repl            → 子进程执行 Python 代码 → 捕获输出注入上下文
+  ├── 调用 fetch_url              → httpx 抓取网页正文 → 结果注入上下文
+  ├── 调用 calculate              → AST 白名单安全求值 → 结果注入上下文
   └── 无工具调用 → 直接回答（普通闲聊自动跳过检索）
   ↓（最多 4 轮工具决策）
 流式生成最终回复（chat_stream）
@@ -98,22 +101,38 @@ LLM 决策（chat_with_tools，不流式）
 轨迹持久化（steps_trace 存入 Message.extra）→ 刷新后可恢复
 ```
 
+**7 个内置工具一览：**
+
+| 工具 | 图标 | 触发场景 | 实现 |
+|------|------|----------|------|
+| `search_knowledge_base` | 🔍 | 知识库问答 | pgvector + pg_trgm 混合检索 |
+| `recall_user_memory` | 🧠 | 用户自身信息查询 | 向量语义检索记忆表 |
+| `get_current_datetime` | 🕐 | 询问当前时间 | UTC 时间格式化 |
+| `web_search` | 🌐 | 实时/最新信息 | Tavily → SearXNG → DuckDuckGo 降级 |
+| `python_repl` | 💻 | 代码执行、数据处理 | subprocess 子进程隔离，15s 超时 |
+| `fetch_url` | 📄 | 读取网页全文 | httpx + BeautifulSoup 正文提取 |
+| `calculate` | 🧮 | 数学计算 | AST 白名单求值，支持 math 函数 |
+
 前端实时展示每个工具调用步骤（图标 + reasoning + 耗时 + 片段数），历史会话恢复后 Agent 轨迹同步还原。
 
 **测试步骤：**
 
 1. 启动前后端，确保已有文档入库
-2. 打开 [http://localhost:3000，点击](http://localhost:3000，点击) topbar 右侧「⚡ Agent 模式」按钮（变为金色表示已开启）
+2. 打开 http://localhost:3000，点击 topbar 右侧「⚡ Agent 模式」按钮（变为金色表示已开启）
 3. 发送知识性问题（如「RAG 的原理是什么」），观察消息气泡上方出现工具调用步骤面板
 4. 发送闲聊（如「你好」），观察 LLM 不调用任何工具，直接回答
 5. 发送「现在最流行的 LLM 有哪些」，观察调用 `web_search` 工具获取实时信息
-6. 刷新页面，切换到刚才的会话，Agent 步骤面板应自动还原
+6. 发送「帮我计算 sqrt(2) * pi 的值」，观察调用 `calculate` 工具
+7. 发送「用 Python 统计 1 到 100 的素数个数」，观察调用 `python_repl` 工具
+8. 刷新页面，切换到刚才的会话，Agent 步骤面板应自动还原
 
 **预期输出：**
 
 ```
 🔍 搜索知识库  "RAG 的原理"  5 个片段  ●（绿点）  128ms
 🌐 网络搜索    "最流行的LLM" 我需要搜索互联网...  ●（绿点）  840ms
+🧮 数学计算    "sqrt(2) * pi"  ●（绿点）  2ms
+💻 执行代码    [stdout] 25  ●（绿点）  312ms
 [流式生成回答...]
 ```
 
