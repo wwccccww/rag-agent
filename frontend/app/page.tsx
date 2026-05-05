@@ -1138,7 +1138,15 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
+  const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const hasSources = (msg.sources?.length ?? 0) > 0;
+
+  const toggleStep = (i: number) =>
+    setExpandedSteps((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
 
   const handleCiteClick = (idx: number) => {
     setSourcesOpen(true);
@@ -1184,36 +1192,68 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
       {/* ── Agent / Plan 工具调用步骤面板 ── */}
       {msg.role === "assistant" && msg.chatMode !== "rag" && (msg.agentSteps?.length ?? 0) > 0 && (
         <div className="agent-steps-panel">
-          {msg.agentSteps!.map((step, i) => (
-            <div key={i} className={`agent-step-row ${step.status}`}>
-              <span className="agent-step-icon">{step.icon}</span>
-              <span className="agent-step-label">{step.label}</span>
-              {step.args && Object.keys(step.args).length > 0 && (
-                <span className="agent-step-args">
-                  {Object.values(step.args)[0]?.toString().slice(0, 40)}
-                  {(Object.values(step.args)[0]?.toString().length ?? 0) > 40 ? "…" : ""}
-                </span>
-              )}
-              {step.reasoning && (
-                <span className="agent-step-reasoning" title={step.reasoning}>
-                  💭 {step.reasoning.slice(0, 60)}{step.reasoning.length > 60 ? "…" : ""}
-                </span>
-              )}
-              {step.status === "calling" && (
-                <span className="agent-step-spinner">···</span>
-              )}
-              {step.status === "done" && step.source_count != null && step.source_count > 0 && (
-                <span className="agent-step-count">{step.source_count} 个片段</span>
-              )}
-              {step.status === "done" && (step.source_count == null || step.source_count === 0) && step.result_summary && (
-                <span className="agent-step-result">{step.result_summary.slice(0, 50)}{step.result_summary.length > 50 ? "…" : ""}</span>
-              )}
-              {step.status === "done" && step.elapsed_ms != null && (
-                <span className="agent-step-elapsed">{step.elapsed_ms}ms</span>
-              )}
-              <span className={`agent-step-status-dot ${step.status}`} />
-            </div>
-          ))}
+          {msg.agentSteps!.map((step, i) => {
+            const isExpanded = expandedSteps.has(i);
+            // 有内容可展开：done 状态下有 result_summary 或 reasoning
+            const hasDetail = step.status === "done" && !!(step.result_summary || step.reasoning);
+            // 拼接展开时显示的完整内容块
+            const detailLines: { label: string; content: string }[] = [];
+            if (step.reasoning) detailLines.push({ label: "推理", content: step.reasoning });
+            if (step.args && Object.keys(step.args).length > 0) {
+              const firstVal = Object.values(step.args)[0]?.toString() ?? "";
+              if (firstVal) detailLines.push({ label: Object.keys(step.args)[0] ?? "参数", content: firstVal });
+            }
+            if (step.result_summary) detailLines.push({ label: "结果", content: step.result_summary });
+
+            return (
+              <div key={i} className="agent-step-wrap">
+                <div
+                  className={`agent-step-row ${step.status}${hasDetail ? " clickable" : ""}`}
+                  onClick={() => hasDetail && toggleStep(i)}
+                >
+                  <span className="agent-step-icon">{step.icon}</span>
+                  <span className="agent-step-label">{step.label}</span>
+                  {step.args && Object.keys(step.args).length > 0 && !isExpanded && (
+                    <span className="agent-step-args">
+                      {Object.values(step.args)[0]?.toString().slice(0, 40)}
+                      {(Object.values(step.args)[0]?.toString().length ?? 0) > 40 ? "…" : ""}
+                    </span>
+                  )}
+                  {step.reasoning && !isExpanded && (
+                    <span className="agent-step-reasoning" title={step.reasoning}>
+                      💭 {step.reasoning.slice(0, 60)}{step.reasoning.length > 60 ? "…" : ""}
+                    </span>
+                  )}
+                  {step.status === "calling" && (
+                    <span className="agent-step-spinner">···</span>
+                  )}
+                  {step.status === "done" && step.source_count != null && step.source_count > 0 && (
+                    <span className="agent-step-count">{step.source_count} 个片段</span>
+                  )}
+                  {step.status === "done" && (step.source_count == null || step.source_count === 0) && step.result_summary && !isExpanded && (
+                    <span className="agent-step-result">{step.result_summary.slice(0, 50)}{step.result_summary.length > 50 ? "…" : ""}</span>
+                  )}
+                  {step.status === "done" && step.elapsed_ms != null && (
+                    <span className="agent-step-elapsed">{step.elapsed_ms}ms</span>
+                  )}
+                  <span className={`agent-step-status-dot ${step.status}`} />
+                  {hasDetail && (
+                    <span className="agent-step-chevron">{isExpanded ? "▲" : "▼"}</span>
+                  )}
+                </div>
+                {isExpanded && hasDetail && (
+                  <div className="agent-step-detail">
+                    {detailLines.map((dl, di) => (
+                      <div key={di} className="agent-step-detail-item">
+                        <span className="agent-step-detail-label">{dl.label}</span>
+                        <pre className="agent-step-detail-content">{dl.content}</pre>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
       {msg.role === "assistant" && hasSources && (

@@ -33,6 +33,7 @@ from typing import Any, Generator
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_memories
 from app.telemetry import telemetry
@@ -468,6 +469,9 @@ TOOL_ICONS: dict[str, str] = {
     "python_repl": "💻",
     "fetch_url": "📄",
     "calculate": "🧮",
+    # 推理策略内部步骤（不是真正的工具，用特殊前缀区分）
+    "__self_ask__": "🤔",
+    "__reflect__": "🔄",
 }
 
 TOOL_LABELS: dict[str, str] = {
@@ -478,7 +482,85 @@ TOOL_LABELS: dict[str, str] = {
     "python_repl": "执行代码",
     "fetch_url": "抓取网页",
     "calculate": "数学计算",
+    "__self_ask__": "问题分解",
+    "__reflect__": "反思评估",
 }
+
+
+# ── Self-Ask：问题分解 ────────────────────────────────────────────────────────
+def _self_ask_decompose(ollama: OllamaClient, message: str) -> list[str]:
+    """
+    将用户主问题分解为 2-4 个可独立检索的子问题。
+    在 ReAct 循环前调用，子问题注入系统提示以引导工具调用更有针对性。
+    失败时返回空列表（调用方降级为不分解）。
+    """
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个问题分析专家。将用户的复杂问题拆解为 2-4 个**独立的子问题**，"
+                "每个子问题对应一个具体的信息查询需求。\n"
+                "输出格式：每行一个子问题，不加编号，不加任何前缀，直接输出完整问句。"
+            ),
+        },
+        {
+            "role": "user",
+            "content": f"主问题：{message}\n\n请列出需要分别查询的子问题（2-4个）：",
+        },
+    ]
+    try:
+        raw = ollama.chat_complete(msgs, temperature=0.1)
+        lines = [
+            ln.strip().lstrip("•·-—*①②③④1234567890.）、 ").strip()
+            for ln in raw.splitlines()
+        ]
+        sub_qs = [ln for ln in lines if len(ln) >= 6 and ln != message][:4]
+        logging.info("[Agent] self_ask: %d sub-questions generated", len(sub_qs))
+        return sub_qs
+    except Exception as e:
+        logging.warning("[Agent] self_ask_decompose failed: %s", e)
+        return []
+
+
+# ── Reflection：信息充分性评估 ────────────────────────────────────────────────
+def _reflect_on_results(
+    ollama: OllamaClient,
+    message: str,
+    result_summaries: list[str],
+) -> tuple[bool, str]:
+    """
+    评估已收集工具结果是否足以全面回答主问题。
+    返回 (is_sufficient, raw_output)。
+    失败时默认 (True, ...) 以避免阻塞循环。
+    """
+    info_block = "\n".join(f"- {s}" for s in result_summaries[-6:])
+    msgs = [
+        {
+            "role": "system",
+            "content": (
+                "你是一个信息充分性评估专家。判断已收集的信息是否足以全面回答用户问题。\n"
+                "只输出以下两种格式之一（一行，不要其他内容）：\n"
+                "  SUFFICIENT\n"
+                "  INSUFFICIENT: <还需要哪方面信息（10字以内）>"
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"用户问题：{message}\n\n"
+                f"已收集信息摘要：\n{info_block}\n\n"
+                "评估结论："
+            ),
+        },
+    ]
+    try:
+        raw = ollama.chat_complete(msgs, temperature=0.0).strip()
+        is_sufficient = raw.upper().startswith("SUFFICIENT")
+        logging.info("[Agent] reflect: sufficient=%s raw=%r", is_sufficient, raw[:80])
+        return is_sufficient, raw
+    except Exception as e:
+        logging.warning("[Agent] reflect failed: %s", e)
+        return True, "评估失败，直接生成"
 
 
 def _execute_tool(
@@ -550,16 +632,29 @@ def run_agent(
     doc_types: list[str] | None = None,
 ) -> Generator[dict[str, Any], None, None]:
     """
-    Agent 主循环 Generator。
+    Agent 主循环 Generator，集成三种推理策略：
+      - 强制 CoT 格式（agent_cot_enabled）
+      - Self-Ask 问题分解（agent_self_ask_enabled）
+      - Reflection 信息充分性评估（agent_reflection_enabled）
 
-    逐步 yield 事件 dict，最后 yield 一个 type="result" 的结束事件：
-      {"type": "agent_step", "step": N, "tool": ..., "status": "calling"|"done",
-       "reasoning": "...", ...}
+    依次 yield 事件 dict，最后 yield type="result" 结束事件：
+      {"type": "agent_step", "step": 0, "tool": "__self_ask__", ...}   # Self-Ask（可选）
+      {"type": "agent_step", "step": N, "tool": <工具名>, "status": "calling"|"done", ...}
+      {"type": "agent_step", "step": N, "tool": "__reflect__", ...}    # Reflection（可选）
       {"type": "result", "sources": [...], "messages": [...], "steps_trace": [...]}
     """
+    # ── 1. 系统提示：工具策略 + CoT 格式约束（可选）────────────────────────
+    cot_block = (
+        "\n\n【推理格式（必须遵守）】\n"
+        "每次调用工具前，必须先在 content 中输出一句推理：\n"
+        "  Thought: 我需要[工具/动作]来[目的]，因为[原因]\n"
+        "即使理由简单也不能跳过 Thought，否则推理过程无法被记录。"
+        if settings.agent_cot_enabled else ""
+    )
+
     system_msg = (
-        "你是一个智能问答助手，可以调用工具来帮助回答用户问题。\n"
-        "工具调用策略：\n"
+        "你是一个智能问答助手，可以调用工具来帮助回答用户问题。\n\n"
+        "【工具调用策略】\n"
         "  - 知识性/专业性问题 → search_knowledge_base\n"
         "  - 用户询问自身情况 → recall_user_memory\n"
         "  - 询问当前时间 → get_current_datetime\n"
@@ -567,13 +662,64 @@ def run_agent(
         "  - 需要阅读某个网页全文 → fetch_url（传入完整 URL）\n"
         "  - 需要执行代码、数据处理、算法计算 → python_repl\n"
         "  - 简单数学计算（四则运算、三角函数、开方等）→ calculate\n"
-        "  - 简单闲聊或已有充足信息 → 直接回答，无需工具\n\n"
-        "在调用工具前，先用一句话说明你的推理思路（'我需要...'）。\n"
-        "可以在单次决策中同时调用多个工具。工具结果会作为上下文帮助你生成更准确的回答。"
+        "  - 简单闲聊或已有充足信息 → 直接回答，无需工具"
+        + cot_block
+        + "\n\n可以在单次决策中同时调用多个工具。工具结果会作为上下文帮助你生成更准确的回答。"
     )
     if session_summary:
         system_msg += f"\n\n【历史对话摘要】\n{session_summary}"
 
+    # ── 2. 初始化状态 ─────────────────────────────────────────────────────────
+    all_sources: list[dict] = []
+    seen_chunk_ids: set[str] = set()
+    steps_trace: list[dict] = []
+    result_summaries: list[str] = []  # 供 Reflection 使用
+    MAX_ITERATIONS = 4
+
+    # ── 3. Self-Ask：问题分解（可选）─────────────────────────────────────────
+    if settings.agent_self_ask_enabled and len(message) >= settings.agent_self_ask_min_chars:
+        yield {
+            "type": "agent_step",
+            "step": 0,
+            "tool": "__self_ask__",
+            "icon": TOOL_ICONS["__self_ask__"],
+            "label": TOOL_LABELS["__self_ask__"],
+            "status": "calling",
+            "args": {},
+            "source_count": 0,
+            "reasoning": "分析问题复杂度，拆解为可独立查询的子问题",
+        }
+        t_sa = time.perf_counter()
+        sub_questions = _self_ask_decompose(ollama, message)
+        sa_ms = int((time.perf_counter() - t_sa) * 1000)
+        telemetry.record_timing("agent.self_ask_ms", float(sa_ms))
+
+        if sub_questions:
+            sa_summary = "\n".join(f"• {q}" for q in sub_questions)
+            system_msg += (
+                f"\n\n【子问题分解】本次已将主问题拆解为以下子问题，"
+                f"请在工具调用时逐一覆盖：\n{sa_summary}"
+            )
+        else:
+            sa_summary = "(未生成子问题，按原问题直接推理)"
+
+        sa_done: dict[str, Any] = {
+            "type": "agent_step",
+            "step": 0,
+            "tool": "__self_ask__",
+            "icon": TOOL_ICONS["__self_ask__"],
+            "label": TOOL_LABELS["__self_ask__"],
+            "status": "done",
+            "args": {},
+            "result_summary": sa_summary,
+            "source_count": 0,
+            "elapsed_ms": sa_ms,
+            "reasoning": "分析问题复杂度，拆解为可独立查询的子问题",
+        }
+        yield sa_done
+        steps_trace.append({k: v for k, v in sa_done.items() if k != "type"})
+
+    # ── 4. 构建消息历史 ───────────────────────────────────────────────────────
     messages: list[dict] = [{"role": "system", "content": system_msg}]
     for m in history:
         role = m.get("role", "")
@@ -582,36 +728,30 @@ def run_agent(
             messages.append({"role": role, "content": content})
     messages.append({"role": "user", "content": message})
 
-    all_sources: list[dict] = []
-    seen_chunk_ids: set[str] = set()
-    steps_trace: list[dict] = []  # 持久化轨迹，随 result 事件一起返回
-    MAX_ITERATIONS = 4
-
+    # ── 5. ReAct 主循环 ───────────────────────────────────────────────────────
     for iteration in range(MAX_ITERATIONS):
-        # ── LLM 决策：选择工具或直接回答 ──────────────────────────────────
+        # ── LLM 决策：选择工具或直接回答 ─────────────────────────────────
         try:
             assistant_msg = ollama.chat_with_tools(messages, AGENT_TOOLS)
         except Exception as e:
             logging.warning("[Agent] chat_with_tools failed at iter %d: %s", iteration, e)
-            break  # 降级：直接用现有 messages 做最终生成
+            break
 
-        # ── P3: 捕获推理文本（部分模型在 content 中输出 CoT 思考）──────────
+        # 捕获推理文本（CoT 开启时 LLM 应以 "Thought:" 开头；否则是自由文本）
         reasoning: str = (assistant_msg.get("content") or "").strip()
-
         tool_calls: list[dict] = assistant_msg.get("tool_calls") or []
 
         if not tool_calls:
             logging.info("[Agent] no tool calls at iter %d → direct answer", iteration)
-            break  # LLM 选择直接回答
+            break
 
-        # 把 assistant 决策加入消息历史
         messages.append({
             "role": "assistant",
             "content": reasoning,
             "tool_calls": tool_calls,
         })
 
-        # ── 执行每个工具 ────────────────────────────────────────────────────
+        # ── 执行本轮所有工具 ──────────────────────────────────────────────
         for tc in tool_calls:
             fn = tc.get("function") or {}
             tool_name = fn.get("name", "unknown")
@@ -621,8 +761,7 @@ def run_agent(
             except Exception:
                 tool_args = {}
 
-            # 调用中事件（附带推理文本）
-            calling_event: dict[str, Any] = {
+            yield {
                 "type": "agent_step",
                 "step": iteration + 1,
                 "tool": tool_name,
@@ -632,7 +771,6 @@ def run_agent(
                 "args": tool_args,
                 "reasoning": reasoning,
             }
-            yield calling_event
 
             t0 = time.perf_counter()
             try:
@@ -643,19 +781,19 @@ def run_agent(
                 result_text = f"工具执行出错：{e}"
                 sources = []
                 logging.warning("[Agent] tool %s failed: %s", tool_name, e)
-            elapsed_ms = (time.perf_counter() - t0) * 1000
-            telemetry.record_tool_exec(tool_name, elapsed_ms)
-            telemetry.record_timing("agent.tool_total_ms", elapsed_ms)
-            elapsed_ms = int(elapsed_ms)
+            elapsed_ms = int((time.perf_counter() - t0) * 1000)
+            telemetry.record_tool_exec(tool_name, float(elapsed_ms))
+            telemetry.record_timing("agent.tool_total_ms", float(elapsed_ms))
 
-            # 去重合并 sources
             for s in sources:
                 sid = str(s.get("chunk_id", ""))
                 if sid not in seen_chunk_ids:
                     seen_chunk_ids.add(sid)
                     all_sources.append(s)
 
-            # 完成事件
+            result_summary = result_text[:150] + ("…" if len(result_text) > 150 else "")
+            result_summaries.append(f"[{tool_name}] {result_summary}")
+
             done_event: dict[str, Any] = {
                 "type": "agent_step",
                 "step": iteration + 1,
@@ -663,30 +801,54 @@ def run_agent(
                 "icon": TOOL_ICONS.get(tool_name, "⚙️"),
                 "label": TOOL_LABELS.get(tool_name, tool_name),
                 "status": "done",
-                "result_summary": result_text[:150] + ("…" if len(result_text) > 150 else ""),
+                "result_summary": result_summary,
                 "source_count": len(sources),
                 "elapsed_ms": elapsed_ms,
                 "reasoning": reasoning,
             }
             yield done_event
-
-            # 记录轨迹（用于持久化）
-            steps_trace.append({
-                "step": iteration + 1,
-                "tool": tool_name,
-                "icon": TOOL_ICONS.get(tool_name, "⚙️"),
-                "label": TOOL_LABELS.get(tool_name, tool_name),
-                "args": tool_args,
-                "result_summary": done_event["result_summary"],
-                "source_count": len(sources),
-                "elapsed_ms": elapsed_ms,
-                "reasoning": reasoning,
-            })
-
-            # 工具结果注入消息历史
+            steps_trace.append({k: v for k, v in done_event.items() if k != "type"})
             messages.append({"role": "tool", "content": result_text})
 
-    # 最终结束事件（携带 sources、完整消息历史和轨迹供持久化）
+        # ── Reflection：评估信息是否充足（可选）─────────────────────────
+        if settings.agent_reflection_enabled and result_summaries:
+            yield {
+                "type": "agent_step",
+                "step": iteration + 1,
+                "tool": "__reflect__",
+                "icon": TOOL_ICONS["__reflect__"],
+                "label": TOOL_LABELS["__reflect__"],
+                "status": "calling",
+                "args": {},
+                "source_count": 0,
+                "reasoning": "评估已收集信息是否足以全面回答问题",
+            }
+            t_ref = time.perf_counter()
+            is_sufficient, reflect_raw = _reflect_on_results(ollama, message, result_summaries)
+            ref_ms = int((time.perf_counter() - t_ref) * 1000)
+            telemetry.record_timing("agent.reflect_ms", float(ref_ms))
+
+            ref_done: dict[str, Any] = {
+                "type": "agent_step",
+                "step": iteration + 1,
+                "tool": "__reflect__",
+                "icon": TOOL_ICONS["__reflect__"],
+                "label": TOOL_LABELS["__reflect__"],
+                "status": "done",
+                "args": {},
+                "result_summary": reflect_raw[:120],
+                "source_count": 0,
+                "elapsed_ms": ref_ms,
+                "reasoning": "评估已收集信息是否足以全面回答问题",
+            }
+            yield ref_done
+            steps_trace.append({k: v for k, v in ref_done.items() if k != "type"})
+
+            if is_sufficient:
+                logging.info("[Agent] reflection SUFFICIENT at iter %d → early stop", iteration)
+                break
+
+    # ── 6. 结束事件 ───────────────────────────────────────────────────────────
     yield {
         "type": "result",
         "sources": all_sources[:top_k],

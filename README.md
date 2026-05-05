@@ -89,8 +89,10 @@ npm run dev
 ```
 用户消息
   ↓
-LLM 决策（chat_with_tools，不流式）
-  ├── 💭 推理文本（Thought）→ 实时展示为 reasoning 标注
+[推理策略] 🤔 Self-Ask：拆解子问题（可选，额外1次LLM）
+  ↓
+LLM 决策（chat_with_tools，不流式；CoT格式约束已注入系统提示）
+  ├── 💭 Thought: 推理文本 → 实时展示为 reasoning 标注
   ├── 调用 search_knowledge_base  → 执行混合检索 → 结果注入上下文
   ├── 调用 recall_user_memory     → 查询向量记忆 → 结果注入上下文
   ├── 调用 get_current_datetime   → 获取当前时间 → 结果注入上下文
@@ -99,11 +101,23 @@ LLM 决策（chat_with_tools，不流式）
   ├── 调用 fetch_url              → httpx 抓取网页正文 → 结果注入上下文
   ├── 调用 calculate              → AST 白名单安全求值 → 结果注入上下文
   └── 无工具调用 → 直接回答（普通闲聊自动跳过检索）
-  ↓（最多 4 轮工具决策）
+  ↓
+[推理策略] 🔄 Reflection：评估信息是否充足（可选，额外1次LLM）
+  ├── SUFFICIENT → 提前退出循环，进入生成
+  └── INSUFFICIENT → 继续下一轮工具决策（最多 4 轮）
+  ↓
 流式生成最终回复（chat_stream）
 ↓
 轨迹持久化（steps_trace 存入 Message.extra）→ 刷新后可恢复
 ```
+
+**三种推理策略（默认全部开启，可通过 `.env` 单独关闭）：**
+
+| 策略 | 配置项 | 描述 | 代价 |
+|------|--------|------|------|
+| **强制 CoT 格式** | `AGENT_COT_ENABLED=true` | 系统提示要求 LLM 每次工具调用前输出 `Thought: ...`，推理不再随意 | 0（仅提示词） |
+| **Self-Ask 分解** | `AGENT_SELF_ASK_ENABLED=true` | 复杂问题拆解为 2-4 个子问题再检索，减少「找不到」的歧义 | +1 次 LLM |
+| **Reflection 反思** | `AGENT_REFLECTION_ENABLED=true` | 每轮工具后评估信息是否充足，充足则提前终止，不充足则继续 | +1 次 LLM/轮 |
 
 **7 个内置工具一览：**
 
@@ -122,21 +136,22 @@ LLM 决策（chat_with_tools，不流式）
 **测试步骤：**
 
 1. 启动前后端，确保已有文档入库
-2. 打开 http://localhost:3000，点击 topbar 右侧「⚡ Agent 模式」按钮（变为金色表示已开启）
-3. 发送知识性问题（如「RAG 的原理是什么」），观察消息气泡上方出现工具调用步骤面板
-4. 发送闲聊（如「你好」），观察 LLM 不调用任何工具，直接回答
-5. 发送「现在最流行的 LLM 有哪些」，观察调用 `web_search` 工具获取实时信息
-6. 发送「帮我计算 sqrt(2) * pi 的值」，观察调用 `calculate` 工具
-7. 发送「用 Python 统计 1 到 100 的素数个数」，观察调用 `python_repl` 工具
-8. 刷新页面，切换到刚才的会话，Agent 步骤面板应自动还原
+2. 打开 http://localhost:3000，点击 topbar「⚡ Agent」按钮
+3. 发送复杂问题（如「对比 RAG 和 Fine-tuning 的优缺点并给出场景建议」），观察：
+   - 先出现 🤔「问题分解」步骤（Self-Ask）
+   - 随后出现工具调用步骤（reasoning 以 `Thought:` 开头，CoT）
+   - 每轮工具后出现 🔄「反思评估」步骤
+4. 发送闲聊（如「你好」），Self-Ask 步骤**不出现**（低于 `AGENT_SELF_ASK_MIN_CHARS`），LLM 直接回答
+5. 如需关闭策略，在 `.env` 设 `AGENT_SELF_ASK_ENABLED=false` 等
 
 **预期输出：**
 
 ```
-🔍 搜索知识库  "RAG 的原理"  5 个片段  ●（绿点）  128ms
-🌐 网络搜索    "最流行的LLM" 我需要搜索互联网...  ●（绿点）  840ms
-🧮 数学计算    "sqrt(2) * pi"  ●（绿点）  2ms
-💻 执行代码    [stdout] 25  ●（绿点）  312ms
+🤔 问题分解   • RAG 的工作原理是什么？\n• Fine-tuning 需要什么条件？  ●  820ms
+🔍 搜索知识库  Thought: 我需要搜索...  5 个片段  ●  128ms
+🔄 反思评估   INSUFFICIENT: 缺少性能对比数据  ●  340ms
+🌐 网络搜索   Thought: 需要补充最新对比数据...  ●  940ms
+🔄 反思评估   SUFFICIENT  ●  280ms
 [流式生成回答...]
 ```
 

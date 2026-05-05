@@ -122,5 +122,15 @@ class Settings(BaseSettings):
     # 计划最大步骤数（超出部分丢弃，避免无限步骤）
     plan_max_steps: int = 6
 
+    # ── Agent 推理策略 ─────────────────────────────────────────────────────────
+    # 强制 CoT 格式：在系统提示中要求 LLM 每次工具调用前输出 "Thought: ..." 推理
+    agent_cot_enabled: bool = True
+    # Self-Ask：ReAct 循环前额外调用一次 LLM 将问题拆解为子问题（会增加一次 LLM 调用耗时）
+    agent_self_ask_enabled: bool = True
+    # Self-Ask 触发最小字符数：问题短于此值时跳过分解（简单问题无需拆解）
+    agent_self_ask_min_chars: int = 20
+    # Reflection：每轮工具执行后评估信息是否充足，充足则提前终止循环（会增加一次 LLM 调用耗时）
+    agent_reflection_enabled: bool = True
+
 
 settings = Settings()
