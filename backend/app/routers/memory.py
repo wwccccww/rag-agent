@@ -1,4 +1,5 @@
 import json
+import logging
 import re
 from uuid import UUID
 
@@ -10,6 +11,7 @@ from app.database import SessionLocal
 from app.models import Memory
 from app.schemas import MemoryCreate, MemoryItem
 from app.services.ollama import OllamaClient
+from app.services.security import sanitize_memory_content
 
 router = APIRouter(prefix="/v1", tags=["memory"])
 
@@ -99,6 +101,13 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
         if not isinstance(c, str) or not c.strip():
             return None
         content = c.strip()[:2000]
+
+        # 记忆内容安全过滤：拒绝含有注入尝试的内容写入长期记忆
+        content, is_suspicious = sanitize_memory_content(content)
+        if is_suspicious:
+            logging.warning("[Memory] Rejected suspicious memory write for user %s: %r", user_id, content[:100])
+            return None
+
         emb = client.embed(content[:8000], apply_embed_budget=False)
 
         # ── 去重合并：余弦距离 < 0.15（相似度 > 0.85）则更新已有记忆 ──

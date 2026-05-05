@@ -21,6 +21,7 @@ from app.services.rag import multi_query_search, search_memories
 from app.telemetry import telemetry
 from app.services.agent import run_agent
 from app.services.plan_execute import run_plan_execute
+from app.services.security import sanitize_external_content, sanitize_user_input
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -44,6 +45,8 @@ def _build_system_prompt(
         sec_clean = sec.lstrip("#").strip() if isinstance(sec, str) else ""
         sec_part = f" · 节：{sec_clean}" if sec_clean else ""
         body = s.get("full_content", s.get("snippet", ""))
+        # 间接注入扫描：文档片段可能被投毒
+        body = sanitize_external_content(body, source_label=f"rag:{src}")
         rag_lines.append(f"[S{i}] ({src}{pg}{sec_part})\n{body}")
 
     rag_block = "\n\n".join(rag_lines) if rag_lines else "(无检索片段)"
@@ -158,6 +161,8 @@ def _maybe_summarize(db: object, client: OllamaClient, sess: SessionModel) -> No
 @router.post("/chat/stream")
 def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
     top_k = body.top_k or settings.rag_top_k
+    # 用户输入安全检测（日志留痕，不拦截）
+    sanitize_user_input(body.message)
 
     def gen() -> Iterator[str]:
         db = SessionLocal()
@@ -327,6 +332,8 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
       sources → token* → final
     """
     top_k = body.top_k or settings.rag_top_k
+    # 用户输入安全检测（日志留痕，不拦截）
+    sanitize_user_input(body.message)
 
     def gen() -> Iterator[str]:
         db = SessionLocal()
@@ -481,6 +488,8 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
       sources / token* / final
     """
     top_k = body.top_k or settings.rag_top_k
+    # 用户输入安全检测（日志留痕，不拦截）
+    sanitize_user_input(body.message)
 
     def gen() -> Iterator[str]:
         db = SessionLocal()
