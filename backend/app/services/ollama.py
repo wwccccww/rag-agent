@@ -131,6 +131,29 @@ class OllamaClient:
         telemetry.record_chat_with_tools(elapsed)
         return msg
 
+    def chat_complete_json(self, messages: list[dict], temperature: float = 0.0) -> str:
+        """非流式对话，要求模型输出 JSON 格式（Ollama format: json）。
+        返回原始 content 字符串（调用方负责解析）。
+        """
+        t0 = time.perf_counter()
+        r = self._client.post(
+            f"{self.base}/api/chat",
+            json={
+                "model": settings.ollama_chat_model,
+                "messages": messages,
+                "stream": False,
+                "format": "json",
+                "options": {"temperature": temperature},
+            },
+        )
+        r.raise_for_status()
+        data = r.json()
+        msg = data.get("message") or {}
+        content = str(msg.get("content") or "").strip()
+        elapsed = (time.perf_counter() - t0) * 1000
+        logging.info("[Ollama] chat_complete_json %.0fms", elapsed)
+        return content
+
     def chat_complete(self, messages: list[dict[str, str]], temperature: float = 0.2) -> str:
         t0 = time.perf_counter()
         r = self._client.post(

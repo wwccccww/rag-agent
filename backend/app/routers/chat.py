@@ -13,13 +13,14 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Message, SessionModel
-from app.schemas import AgentChatRequest, ChatStreamRequest
+from app.schemas import AgentChatRequest, ChatStreamRequest, PlanExecuteRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
 from app.services.citation_guard import sanitize_assistant_citations
 from app.services.rag import multi_query_search, search_memories
 from app.telemetry import telemetry
 from app.services.agent import run_agent
+from app.services.plan_execute import run_plan_execute
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -455,6 +456,194 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             _maybe_summarize(db, client, sess)
         except Exception as e:
             logging.exception("[Agent] stream error")
+            yield _sse("error", {"message": str(e)})
+        finally:
+            client.close()
+            db.close()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8", headers=headers)
+
+
+@router.post("/chat/plan_execute/stream")
+def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
+    """Plan & Execute 模式：先生成结构化计划，再逐步执行工具，最后流式综合生成回复。
+
+    SSE 事件序列：
+      plan             → {goal, steps[], plan_ms}
+      plan_step_start  → {step_id, description, tool}
+      agent_step (calling/done) × N
+      plan_step_done   → {step_id, description, success, result_summary, elapsed_ms}
+      sources / token* / final
+    """
+    top_k = body.top_k or settings.rag_top_k
+
+    def gen() -> Iterator[str]:
+        db = SessionLocal()
+        client = OllamaClient()
+        try:
+            is_new_session = not body.session_id
+            if body.session_id:
+                sess = db.get(SessionModel, body.session_id)
+                if not sess or sess.user_id != body.user_id:
+                    yield _sse("error", {"message": "session not found"})
+                    return
+            else:
+                sess = SessionModel(user_id=body.user_id)
+                db.add(sess)
+                db.flush()
+
+            sid: UUID = sess.id
+            db.add(Message(session_id=sid, role="user", content=body.message))
+            sess.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+            rows = (
+                db.execute(
+                    select(Message)
+                    .where(Message.session_id == sid)
+                    .order_by(Message.created_at.desc())
+                    .limit(settings.chat_history_turns * 2 + 2)
+                )
+                .scalars()
+                .all()
+            )
+            hist = [{"role": m.role, "content": m.content} for m in reversed(rows)]
+
+            final_messages: list[dict] = []
+            pe_sources: list[dict] = []
+            steps_trace: list[dict] = []
+            plan_goal: str = ""
+            plan_steps: list[dict] = []
+
+            t_pe = time.perf_counter()
+            for event in run_plan_execute(
+                db=db,
+                ollama=client,
+                user_id=body.user_id,
+                message=body.message,
+                history=hist,
+                top_k=top_k,
+                session_summary=sess.summary or None,
+                kb_collection=body.kb_collection,
+                doc_types=list(body.doc_types) if body.doc_types else None,
+            ):
+                etype = event.get("type", "")
+
+                if etype == "plan":
+                    plan_goal = event.get("goal", "")
+                    plan_steps = event.get("steps", [])
+                    yield _sse("plan", {
+                        "goal": plan_goal,
+                        "steps": plan_steps,
+                        "plan_ms": event.get("plan_ms", 0),
+                    })
+
+                elif etype == "plan_step_start":
+                    yield _sse("plan_step_start", {
+                        "step_id": event["step_id"],
+                        "description": event["description"],
+                        "tool": event.get("tool"),
+                    })
+
+                elif etype == "plan_step_done":
+                    yield _sse("plan_step_done", {
+                        "step_id": event["step_id"],
+                        "description": event["description"],
+                        "success": event.get("success", True),
+                        "result_summary": event.get("result_summary", ""),
+                        "elapsed_ms": event.get("elapsed_ms", 0),
+                    })
+
+                elif etype == "agent_step":
+                    yield _sse("agent_step", {k: v for k, v in event.items() if k != "type"})
+
+                elif etype == "result":
+                    final_messages = event["messages"]
+                    pe_sources = event["sources"]
+                    steps_trace = event.get("steps_trace", [])
+
+            telemetry.record_timing("plan_execute.loop_ms", (time.perf_counter() - t_pe) * 1000)
+
+            pub_sources = [
+                {
+                    "chunk_id": str(s["chunk_id"]),
+                    "source": s.get("source"),
+                    "page": s.get("page"),
+                    "section_heading": s.get("section_heading"),
+                    "score": s.get("score"),
+                    "snippet": s.get("snippet"),
+                }
+                for s in pe_sources
+            ]
+            yield _sse("sources", {"session_id": str(sid), "sources": pub_sources})
+
+            full = ""
+            token_count = 0
+            t_stream_start = time.perf_counter()
+            for delta in client.chat_stream(final_messages, temperature=0.3):
+                full += delta
+                token_count += 1
+                yield _sse("token", {"delta": delta})
+
+            elapsed = time.perf_counter() - t_stream_start
+            tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
+
+            full_out, _removed = sanitize_assistant_citations(
+                full,
+                pe_sources,
+                enabled=bool(pe_sources) and settings.rag_citation_verify,
+                min_hits=settings.rag_citation_min_hits,
+                min_term_frac=settings.rag_citation_min_term_frac,
+                max_source_terms=settings.rag_citation_max_source_terms,
+            )
+
+            extra: dict = {}
+            if steps_trace:
+                extra["agent_steps"] = steps_trace
+            if plan_goal:
+                extra["plan_goal"] = plan_goal
+            if plan_steps:
+                extra["plan_steps"] = plan_steps
+
+            db.add(Message(
+                session_id=sid,
+                role="assistant",
+                content=full_out,
+                extra=extra or None,
+            ))
+            db.commit()
+
+            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
+
+            session_title: str | None = None
+            if is_new_session:
+                session_title = _generate_title(client, body.message)
+                sess.summary = session_title
+                db.commit()
+
+            final_payload: dict = {
+                "session_id": str(sid),
+                "memory_writes": [mem_written] if mem_written else [],
+                "stats": {"tokens": token_count, "tok_per_sec": tps},
+            }
+            if session_title:
+                final_payload["session_title"] = session_title
+            if full_out != full:
+                final_payload["assistant_content"] = full_out
+            if plan_goal:
+                final_payload["plan_goal"] = plan_goal
+            if plan_steps:
+                final_payload["plan_steps"] = plan_steps
+            yield _sse("final", final_payload)
+
+            _maybe_summarize(db, client, sess)
+        except Exception as e:
+            logging.exception("[PlanExec] stream error")
             yield _sse("error", {"message": str(e)})
         finally:
             client.close()

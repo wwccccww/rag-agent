@@ -1095,28 +1095,37 @@ a:hover { text-decoration: underline; }
   40% { transform: scale(1); opacity: 1; }
 }
 
-/* ── Agent 模式切换按钮 ── */
-.agent-mode-toggle {
+/* ── 对话模式切换组（RAG / Agent / 规划）── */
+.mode-toggle-group {
+  display: flex;
+  align-items: center;
+  border: 1.5px solid var(--border);
+  border-radius: 20px;
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.mode-toggle-btn {
   font-size: 11px;
   font-weight: 600;
   padding: 4px 10px;
-  border-radius: 20px;
-  border: 1.5px solid var(--border);
+  border: none;
   background: transparent;
   color: var(--text-muted);
   cursor: pointer;
   transition: all 0.18s ease;
   white-space: nowrap;
+  border-right: 1px solid var(--border);
 }
-.agent-mode-toggle:hover {
-  border-color: #f59e0b;
-  color: #f59e0b;
+.mode-toggle-btn:last-child {
+  border-right: none;
 }
-.agent-mode-toggle.active {
-  background: linear-gradient(135deg, #f59e0b20, #ef444410);
-  border-color: #f59e0b;
+.mode-toggle-btn:hover {
   color: #f59e0b;
-  box-shadow: 0 0 8px #f59e0b30;
+  background: #f59e0b10;
+}
+.mode-toggle-btn.active {
+  background: linear-gradient(135deg, #f59e0b22, #ef444412);
+  color: #f59e0b;
 }
 
 /* ── Agent 步骤面板 ── */
@@ -1385,3 +1394,93 @@ a:hover { text-decoration: underline; }
   line-height: 1.35;
   white-space: normal;
 }
+
+/* ── Plan & Execute 规划面板 ── */
+.plan-panel {
+  margin-left: 36px;
+  margin-bottom: 4px;
+  border: 1px solid #6366f130;
+  border-radius: 10px;
+  background: #6366f108;
+  overflow: hidden;
+}
+.plan-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #6366f120;
+  background: #6366f112;
+}
+.plan-panel-icon {
+  font-size: 14px;
+  flex-shrink: 0;
+}
+.plan-panel-goal {
+  font-size: 12px;
+  font-weight: 700;
+  color: #a5b4fc;
+  flex: 1;
+}
+.plan-step-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--text-muted);
+  border-bottom: 1px solid #6366f110;
+  transition: background 0.15s;
+}
+.plan-step-row:last-child {
+  border-bottom: none;
+}
+.plan-step-row.running {
+  background: #f59e0b08;
+  color: var(--text);
+}
+.plan-step-row.done {
+  opacity: 0.7;
+}
+.plan-step-row.error {
+  background: #ef444408;
+  color: #f87171;
+}
+.plan-step-num {
+  font-size: 10px;
+  font-weight: 700;
+  color: #6366f1;
+  background: #6366f118;
+  border-radius: 50%;
+  width: 18px;
+  height: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.plan-step-desc {
+  flex: 1;
+  font-weight: 500;
+}
+.plan-step-tool {
+  font-size: 10px;
+  font-family: ui-monospace, Consolas, monospace;
+  color: #94a3b8;
+  background: #1e293b;
+  padding: 1px 6px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.plan-step-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--border);
+  transition: background 0.2s;
+}
+.plan-step-dot.pending  { background: #334155; }
+.plan-step-dot.running  { background: #f59e0b; box-shadow: 0 0 6px #f59e0b80; animation: pulse 1s infinite; }
+.plan-step-dot.done     { background: #4ade80; }
+.plan-step-dot.error    { background: #f87171; }

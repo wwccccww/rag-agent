@@ -1,8 +1,11 @@
-# RAG Agent（Tool Calling Agent + 流式对话 + RAG + 分层记忆）
+# RAG Agent（Tool Calling Agent + Plan & Execute + 流式对话 + RAG + 分层记忆）
 
 偏后端作品：FastAPI 提供 SSE 流式对话与文档入库；Postgres + pgvector 存向量；Ollama 本地 `qwen2.5:7b` 生成、`nomic-embed-text` 向量化；Next.js（App Router）作为 BFF 代理 SSE，便于演示。
 
-**核心亮点：Tool Calling Agent**——对话界面可切换到 Agent 模式，LLM 自主决策是否调用 `search_knowledge_base`、`recall_user_memory`、`get_current_datetime`、`web_search`、`python_repl`、`fetch_url`、`calculate` 等 7 个工具，实现真正的 ReAct 推理循环，而非无脑检索。Agent 每步决策均会捕获 LLM 的推理文本（Thought）并持久化轨迹，刷新页面后可恢复。
+**核心亮点：三种对话模式**
+- **📚 RAG 模式**：混合检索（向量 + 三元组 + RRF + Reranker）后直接生成回答
+- **⚡ Agent 模式**：LLM 自主 ReAct 循环，动态决策是否调用工具（最多 4 轮）
+- **🗂 Plan & Execute 模式**：LLM 先一次性规划 2-6 个子任务，再按计划逐步执行工具，最后综合生成；适合复杂多步问题
 
 ## 架构
 
@@ -60,7 +63,8 @@ npm run dev
 | `GET /v1/metrics`            | 进程内性能指标快照（TTFT / p50/p95 / tok/s 等）                                       |
 | `POST /v1/ingest`            | 文件上传（`.txt/.md/.pdf`）、URL 抓取、纯文本入库；Form 可选 `kb_collection`、`doc_type`（**自定义**：`1–32` 位小写 `[a-z0-9_-]`，空格等会规范为连字符；常见预设 `tutorial`/`api`/`requirements`/`general`） |
 | `POST /v1/chat/stream`       | SSE：`sources` → `token*` → `final`。`final` 可含 `assistant_content`：与入库助手消息一致；当引用后处理移除了无效的 `[Sk]` 时，前端应用该字段**覆盖**已流式拼接的正文 |
-| `POST /v1/chat/agent/stream` | **Agent 模式**；SSE 序列同上，亦支持 `final.assistant_content`                                        |
+| `POST /v1/chat/agent/stream` | **Agent 模式**（ReAct）；SSE 序列同上，亦支持 `final.assistant_content`                              |
+| `POST /v1/chat/plan_execute/stream` | **Plan & Execute 模式**；SSE 新增 `plan` / `plan_step_start` / `plan_step_done` 事件 |
 | `GET /v1/documents`          | 文档列表；可选查询参数 `kb_collection`、`doc_type` 筛选                                       |
 | `GET /v1/documents/catalog/doc-types` | 去重后的 `doc_type` 列表；可选 `kb_collection` 仅统计该分区（对话侧栏与当前分区一致时用于快捷展示；路径避免与 `/documents/{id}` 冲突） |
 | `PATCH /v1/documents/{id}`   | 入库后修改该文档的 `kb_collection` 与/或 `doc_type`（JSON 至少其一）；同步各 chunk 的 `meta`；若目标分区已有相同 `content_sha256` 则 **409** |
@@ -134,6 +138,53 @@ LLM 决策（chat_with_tools，不流式）
 🧮 数学计算    "sqrt(2) * pi"  ●（绿点）  2ms
 💻 执行代码    [stdout] 25  ●（绿点）  312ms
 [流式生成回答...]
+```
+
+---
+
+### 0.1 Plan & Execute 模式
+
+topbar 点击「🗂 规划」按钮，切换到 Plan & Execute 模式，走 `/v1/chat/plan_execute/stream` 端点。
+
+**与 Agent 模式的核心区别：**
+
+| 维度 | Agent（ReAct）| Plan & Execute |
+|------|--------------|----------------|
+| 工具调用决策 | LLM 每轮动态决策 | 开头一次性规划，按计划机械执行 |
+| 适用场景 | 单一或不确定步骤的问题 | 需要多来源、多步骤的复杂任务 |
+| 透明度 | 轨迹逐步展现 | 计划全貌先行展示，再逐步完成 |
+| 最大步骤 | 4 轮工具决策 | 6 步（`PLAN_MAX_STEPS`） |
+
+**执行流程：**
+
+```
+用户消息
+  ↓
+[Phase 1: 规划] LLM 生成结构化 JSON 计划（goal + steps[]）
+  → SSE: plan 事件（前端展示完整计划面板）
+  ↓
+[Phase 2: 逐步执行] 按步骤顺序执行各工具步骤
+  → SSE: plan_step_start / agent_step(calling/done) / plan_step_done
+  → 每步结果累积进共享上下文
+  ↓
+[Phase 3: 综合生成] 基于所有步骤结果流式输出最终回复
+  → SSE: sources / token* / final
+```
+
+**测试步骤：**
+
+1. 启动前后端，确保已有文档入库
+2. 打开 http://localhost:3000，点击 topbar「🗂 规划」按钮
+3. 发送多步骤复杂问题，如：「对比 RAG 和 Fine-tuning 的优缺点，并给出代码示例」
+4. 观察：先出现蓝色规划面板（显示 2-6 个子任务），再逐步出现工具调用步骤
+
+**预期输出（规划面板）：**
+
+```
+🗂 对比两种技术方案
+  1 ● 搜索知识库      [search_knowledge_base]  ···（执行中）
+  2 ○ 搜索网络最新信息 [web_search]             （等待）
+  3 ○ 综合分析并生成   [无工具]                  （等待）
 ```
 
 ---

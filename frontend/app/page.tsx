@@ -38,6 +38,19 @@ type AgentStep = {
   reasoning?: string;
 };
 
+type PlanStep = {
+  id: number;
+  description: string;
+  tool: string | null;
+  tool_args?: Record<string, string>;
+  purpose?: string;
+  /** 前端渲染状态：pending/running/done/error */
+  uiStatus?: "pending" | "running" | "done" | "error";
+  elapsed_ms?: number;
+};
+
+type ChatMode = "rag" | "agent" | "plan";
+
 type MsgStats = { tokens: number; tok_per_sec: number };
 
 type ChatMsg = {
@@ -48,8 +61,11 @@ type ChatMsg = {
   streaming?: boolean;
   createdAt?: string;
   agentSteps?: AgentStep[];
-  agentMode?: boolean;
+  chatMode?: ChatMode;
   stats?: MsgStats;
+  /** Plan & Execute 模式专属 */
+  planGoal?: string;
+  planSteps?: PlanStep[];
 };
 
 type Session = { id: string; label: string };
@@ -139,7 +155,7 @@ export default function HomePage() {
   const [health, setHealth] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
   const [memToast, setMemToast] = useState<string | null>(null);
-  const [agentMode, setAgentMode] = useState(false);
+  const [chatMode, setChatMode] = useState<ChatMode>("rag");
   const [syncing, setSyncing] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editLabel, setEditLabel] = useState("");
@@ -492,7 +508,9 @@ export default function HomePage() {
     const assistantMsg: ChatMsg = {
       id: uid(), role: "assistant", content: "", sources: [],
       streaming: true, createdAt: now,
-      agentMode, agentSteps: agentMode ? [] : undefined,
+      chatMode,
+      agentSteps: chatMode !== "rag" ? [] : undefined,
+      planSteps: chatMode === "plan" ? [] : undefined,
     };
     setMessages((m) => [...m, userMsg, assistantMsg]);
 
@@ -506,7 +524,10 @@ export default function HomePage() {
       .filter((x, i, a) => a.indexOf(x) === i);
     if (docTypesPayload.length > 0) payload.doc_types = docTypesPayload;
 
-    const endpoint = agentMode ? "/api/chat/agent/stream" : "/api/chat/stream";
+    const endpoint =
+      chatMode === "agent" ? "/api/chat/agent/stream" :
+      chatMode === "plan"  ? "/api/chat/plan_execute/stream" :
+      "/api/chat/stream";
     const controller = new AbortController();
     abortRef.current = controller;
 
@@ -539,6 +560,53 @@ export default function HomePage() {
     const capturedUserId = userId;
     let capturedSessionId = currentSession;
     await consumeSse(res, (event, data) => {
+      // ── Plan & Execute 专属事件 ──────────────────────────────────────
+      if (event === "plan" && data && typeof data === "object") {
+        const d = data as { goal?: string; steps?: PlanStep[] };
+        const steps = (d.steps ?? []).map((s) => ({ ...s, uiStatus: "pending" as const }));
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === aId
+              ? { ...msg, planGoal: d.goal ?? "", planSteps: steps }
+              : msg
+          )
+        );
+      }
+      if (event === "plan_step_start" && data && typeof data === "object") {
+        const d = data as { step_id?: number };
+        setMessages((m) =>
+          m.map((msg) => {
+            if (msg.id !== aId || !msg.planSteps) return msg;
+            return {
+              ...msg,
+              planSteps: msg.planSteps.map((s) =>
+                s.id === d.step_id ? { ...s, uiStatus: "running" as const } : s
+              ),
+            };
+          })
+        );
+      }
+      if (event === "plan_step_done" && data && typeof data === "object") {
+        const d = data as { step_id?: number; success?: boolean; elapsed_ms?: number };
+        setMessages((m) =>
+          m.map((msg) => {
+            if (msg.id !== aId || !msg.planSteps) return msg;
+            return {
+              ...msg,
+              planSteps: msg.planSteps.map((s) =>
+                s.id === d.step_id
+                  ? {
+                      ...s,
+                      uiStatus: (d.success !== false ? "done" : "error") as "done" | "error",
+                      elapsed_ms: d.elapsed_ms,
+                    }
+                  : s
+              ),
+            };
+          })
+        );
+      }
+      // ── Agent 工具步骤（agent 和 plan 模式共用）─────────────────────
       if (event === "agent_step" && data && typeof data === "object") {
         const step = data as AgentStep;
         setMessages((m) =>
@@ -779,13 +847,29 @@ export default function HomePage() {
               ↓ 导出 MD
             </button>
           )}
-          <button
-            className={`agent-mode-toggle${agentMode ? " active" : ""}`}
-            onClick={() => setAgentMode((v) => !v)}
-            title={agentMode ? "当前：Agent 模式（LLM 自主决策工具调用），点击关闭" : "当前：普通 RAG 模式，点击开启 Agent 模式"}
-          >
-            {agentMode ? "⚡ Agent 开启" : "⚡ Agent 关闭"}
-          </button>
+          <div className="mode-toggle-group" title="选择对话模式">
+            <button
+              className={`mode-toggle-btn${chatMode === "rag" ? " active" : ""}`}
+              onClick={() => setChatMode("rag")}
+              title="普通 RAG 模式：检索知识库后直接回答"
+            >
+              📚 RAG
+            </button>
+            <button
+              className={`mode-toggle-btn${chatMode === "agent" ? " active" : ""}`}
+              onClick={() => setChatMode("agent")}
+              title="Agent 模式：LLM 自主决策是否调用工具（ReAct 循环）"
+            >
+              ⚡ Agent
+            </button>
+            <button
+              className={`mode-toggle-btn${chatMode === "plan" ? " active" : ""}`}
+              onClick={() => setChatMode("plan")}
+              title="Plan & Execute 模式：先规划子任务，再逐步执行，最后综合生成"
+            >
+              🗂 规划
+            </button>
+          </div>
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
         </div>
@@ -1072,7 +1156,33 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-      {msg.role === "assistant" && msg.agentMode && (msg.agentSteps?.length ?? 0) > 0 && (
+      {/* ── Plan & Execute 规划面板 ── */}
+      {msg.role === "assistant" && msg.chatMode === "plan" && msg.planGoal && (
+        <div className="plan-panel">
+          <div className="plan-panel-header">
+            <span className="plan-panel-icon">🗂</span>
+            <span className="plan-panel-goal">{msg.planGoal}</span>
+          </div>
+          {(msg.planSteps ?? []).map((step) => (
+            <div key={step.id} className={`plan-step-row ${step.uiStatus ?? "pending"}`}>
+              <span className="plan-step-num">{step.id}</span>
+              <span className="plan-step-desc">{step.description}</span>
+              {step.tool && (
+                <span className="plan-step-tool">{step.tool}</span>
+              )}
+              {step.uiStatus === "running" && (
+                <span className="agent-step-spinner">···</span>
+              )}
+              {step.uiStatus === "done" && step.elapsed_ms != null && (
+                <span className="agent-step-elapsed">{step.elapsed_ms}ms</span>
+              )}
+              <span className={`plan-step-dot ${step.uiStatus ?? "pending"}`} />
+            </div>
+          ))}
+        </div>
+      )}
+      {/* ── Agent / Plan 工具调用步骤面板 ── */}
+      {msg.role === "assistant" && msg.chatMode !== "rag" && (msg.agentSteps?.length ?? 0) > 0 && (
         <div className="agent-steps-panel">
           {msg.agentSteps!.map((step, i) => (
             <div key={i} className={`agent-step-row ${step.status}`}>

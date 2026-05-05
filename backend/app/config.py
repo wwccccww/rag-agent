@@ -118,5 +118,9 @@ class Settings(BaseSettings):
     # 提取正文最大字符数；超出部分截断（避免超长网页占满上下文）
     fetch_url_max_chars: int = 4000
 
+    # ── Plan & Execute 模式 ────────────────────────────────────────────────────
+    # 计划最大步骤数（超出部分丢弃，避免无限步骤）
+    plan_max_steps: int = 6
+
 
 settings = Settings()

@@ -17,6 +17,34 @@ class IngestResponse(BaseModel):
     chunks_created: int
 
 
+def _validate_kb(v: object) -> str | None:
+    if v is None:
+        return None
+    if isinstance(v, str) and not v.strip():
+        return None
+    return validate_kb_collection_optional(str(v))
+
+
+def _validate_doc_types(v: object) -> list[str] | None:
+    if v is None:
+        return None
+    if isinstance(v, list) and len(v) == 0:
+        return None
+    if not isinstance(v, list):
+        return None
+    out: list[str] = []
+    for x in v[:8]:
+        if not isinstance(x, str) or not x.strip():
+            continue
+        try:
+            n = normalize_doc_type(x)
+        except ValueError as e:
+            raise ValueError(str(e)) from e
+        if n not in out:
+            out.append(n)
+    return out or None
+
+
 class ChatStreamRequest(BaseModel):
     user_id: str = Field(default="demo")
     session_id: UUID | None = None
@@ -28,32 +56,12 @@ class ChatStreamRequest(BaseModel):
     @field_validator("kb_collection", mode="before")
     @classmethod
     def _v_kb_collection(cls, v: object) -> str | None:
-        if v is None:
-            return None
-        if isinstance(v, str) and not v.strip():
-            return None
-        return validate_kb_collection_optional(str(v))
+        return _validate_kb(v)
 
     @field_validator("doc_types", mode="before")
     @classmethod
     def _v_doc_types(cls, v: object) -> list[str] | None:
-        if v is None:
-            return None
-        if isinstance(v, list) and len(v) == 0:
-            return None
-        if not isinstance(v, list):
-            return None
-        out: list[str] = []
-        for x in v[:8]:
-            if not isinstance(x, str) or not x.strip():
-                continue
-            try:
-                n = normalize_doc_type(x)
-            except ValueError as e:
-                raise ValueError(str(e)) from e
-            if n not in out:
-                out.append(n)
-        return out or None
+        return _validate_doc_types(v)
 
 
 class AgentChatRequest(BaseModel):
@@ -68,32 +76,32 @@ class AgentChatRequest(BaseModel):
     @field_validator("kb_collection", mode="before")
     @classmethod
     def _v_kb_collection_agent(cls, v: object) -> str | None:
-        if v is None:
-            return None
-        if isinstance(v, str) and not v.strip():
-            return None
-        return validate_kb_collection_optional(str(v))
+        return _validate_kb(v)
 
     @field_validator("doc_types", mode="before")
     @classmethod
     def _v_doc_types_agent(cls, v: object) -> list[str] | None:
-        if v is None:
-            return None
-        if isinstance(v, list) and len(v) == 0:
-            return None
-        if not isinstance(v, list):
-            return None
-        out: list[str] = []
-        for x in v[:8]:
-            if not isinstance(x, str) or not x.strip():
-                continue
-            try:
-                n = normalize_doc_type(x)
-            except ValueError as e:
-                raise ValueError(str(e)) from e
-            if n not in out:
-                out.append(n)
-        return out or None
+        return _validate_doc_types(v)
+
+
+class PlanExecuteRequest(BaseModel):
+    """Plan & Execute 模式请求：先规划子任务，再逐步执行，最后综合生成。"""
+    user_id: str = Field(default="demo")
+    session_id: UUID | None = None
+    message: str
+    top_k: int | None = None
+    kb_collection: str | None = Field(default=None, max_length=64)
+    doc_types: list[str] | None = None
+
+    @field_validator("kb_collection", mode="before")
+    @classmethod
+    def _v_kb_collection_pe(cls, v: object) -> str | None:
+        return _validate_kb(v)
+
+    @field_validator("doc_types", mode="before")
+    @classmethod
+    def _v_doc_types_pe(cls, v: object) -> list[str] | None:
+        return _validate_doc_types(v)
 
 
 class SourceItem(BaseModel):
