@@ -122,6 +122,15 @@ npm run dev
 | `GET /v1/kg/relations?user_id=` | 列出所有关系边（含主/宾语名称）|
 | `DELETE /v1/kg/entities/{id}` | 删除实体及其所有关联关系 |
 
+**前端页面：** 打开 `http://localhost:3000/kg`（可选查询参数 `?user_id=demo`），展示实体列表、关系三元组列表及简易环形拓扑图（≤28 个节点时）；侧栏「🔗 知识图谱」与记忆页入口同路由。Next.js BFF：`/api/kg/entities`、`/api/kg/relations`、`DELETE /api/kg/entities/[entityId]`。
+
+**测试步骤：**
+
+1. 浏览器打开 `http://localhost:3000/kg`，确认 `user_id` 与对话一致，点击刷新；无数据时先在 Agent 对话中用「记住，我同事…」等触发记忆与三元组写入。
+2. 在图谱页点击某一实体或关系，确认拓扑图中对应边高亮；点击「删」可删除实体（后端级联删边）。
+3. （API 校验）发送（Agent 模式）：`我的同事李雷负责认证服务，他使用 Go 语言，团队在北京` 后，`GET http://127.0.0.1:8000/v1/kg/entities?user_id=demo` 与 `GET /v1/kg/relations?user_id=demo` 应能看到实体与边。
+4. 再问：`认证服务用什么语言？` → `recall_user_memory` 会带图谱展开上下文，便于模型回答「Go」等。
+
 **配置项（`.env`）：**
 
 ```
@@ -130,13 +139,6 @@ KG_TRIPLE_EXTRACT_ENABLED=true    # 写记忆时同步提取三元组
 KG_ENTITY_DEDUP_THRESHOLD=0.15    # 实体去重相似度阈值
 KG_GRAPH_HOPS=2                   # 展开跳数（1-3）
 ```
-
-**测试步骤：**
-
-1. 发送（Agent 模式）：`我的同事李雷负责认证服务，他使用 Go 语言，团队在北京`
-2. `GET http://127.0.0.1:8000/v1/kg/entities?user_id=demo` 查看提取的实体
-3. `GET http://127.0.0.1:8000/v1/kg/relations?user_id=demo` 查看关系图谱
-4. 发送：`认证服务用什么语言？` → Agent 调用 `recall_user_memory` 时会触发图谱展开，LLM 得到"李雷 --[使用]--> Go"这条关系后直接回答
 
 ---
 

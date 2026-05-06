@@ -63,7 +63,10 @@ function MemoryContent() {
     <div className="ingest-layout" style={{ maxWidth: 680 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 4 }}>
         <h2>长期记忆</h2>
-        <a href="/" className="btn">← 返回对话</a>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <a href={`/kg?user_id=${encodeURIComponent(userId)}`} className="btn">🔗 知识图谱</a>
+          <a href="/" className="btn">← 返回对话</a>
+        </div>
       </div>
       <p className="field-label" style={{ marginBottom: 16 }}>
         跨会话可检索的用户记忆，对话前会按语义相似度注入 Prompt。
