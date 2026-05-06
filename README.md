@@ -181,6 +181,38 @@ KG_GRAPH_HOPS=2                   # 展开跳数（1-3）
 
 ---
 
+### 0-C. Multi-hop RAG（两跳检索：支持“同事喜欢什么”这类跳转问题）
+
+普通 RAG 往往是「一次检索 Top-K → 直接生成」，对需要**两跳**的问题（先定位实体/主语，再查其属性）容易召回无关片段。本项目在 RAG 模式加入 **Multi-hop 编排层**（可开关），流程为：
+
+```
+用户问题 Q
+  ↓ Hop1：对 Q 做混合检索（向量 + pg_trgm + RRF）
+  ↓ 基于 Hop1 命中片段，用 LLM 生成下一跳 next_query（JSON 输出，含原因）
+  ↓ Hop2：对 next_query 再检索一次
+  ↓ 合并去重证据（按 chunk_id，保留更高 rrf/score）
+  ↓ 仅在证据内回答 + 引用 [S*]
+```
+
+**配置项（`.env`）：**
+
+```
+RAG_MULTI_HOP_ENABLED=true
+RAG_MULTI_HOP_MAX_HOPS=2
+```
+
+**测试步骤：**
+1. 先入库两段文本（可在同一文档或不同文档）：
+   - `我同事是小蕊子，她住华南农业大学。`
+   - `小蕊子喜欢足球、蓝桥、rag和MUSIC。`
+2. 在 RAG 模式提问：`同事喜欢什么？`
+
+**预期输出：**
+- 后端 SSE 会额外发送 `rag_hop` 事件（Hop1/Hop2 的 query 与命中数；前端可忽略该事件）
+- 回复中能给出“小蕊子喜欢……”并正确引用对应片段
+
+---
+
 ### 0. Tool Calling Agent（核心亮点）
 
 对话界面：顶栏有「📚 文档库」入口；侧栏「会话」旁有 **「清空」**（一键删除当前 `user_id` 下全部会话及服务器记录，需确认）与 **「↻」**（从服务器同步会话列表）；「检索文档类型」侧栏仅保留摘要按钮，点开后在**居中弹窗**内配置：打开弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（若侧栏填了 `kb_collection` 则带同名查询参数），把**知识库里已出现过的 doc_type**（如 `knowledge`）与四个预设一起显示为快捷芯片；你在「自定义」里添加且库中尚未出现的类型会额外记入 `localStorage` 键 `rag_doc_type_shortcuts_<userId>`（最多 16 个，虚线边框芯片）。当前勾选保存在 `rag_doc_types_<userId>`。文档列表的**类型筛选**与**批量目标类型**同样通过弹窗操作；打开任一弹窗时会请求 **`GET /v1/documents/catalog/doc-types`**（与当前页「分区」筛选一致时带 `kb_collection`）并**合并读取** `rag_doc_type_shortcuts_<userId>`，因此聊天页「自定义」里加的 slug 会出现在芯片里，且**不会因当前按类型筛选列表变窄而丢失**其它已在库中出现的类型（例如选中 `api` 后仍可见 `knowledge`）。入库页「选择文档类型」弹窗打开时同样请求 **catalog** 并合并 **`rag_doc_type_shortcuts_<userId>`**，快捷区与对话/文档列表语义一致（虚线=仅本地、灰边=库中已有）。topbar 另有「⚡ Agent 模式」开关，开启后走 `/v1/chat/agent/stream` 端点：

@@ -1286,6 +1286,97 @@ a:hover { text-decoration: underline; }
   background: #4ade80;
 }
 
+/* ── RAG Multi-hop 面板 ── */
+.rag-hop-panel {
+  margin-left: 36px;
+  margin-bottom: 4px;
+  border: 1px solid #38bdf830;
+  border-radius: 10px;
+  background: #38bdf808;
+  overflow: hidden;
+}
+.rag-hop-toggle {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  border: none;
+  background: #38bdf812;
+  color: #bae6fd;
+  font-weight: 700;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rag-hop-toggle:hover {
+  background: #38bdf820;
+}
+.rag-hop-list {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rag-hop-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #38bdf820;
+  border-radius: 10px;
+  background: #0b1220;
+  color: var(--text-muted);
+  font-size: 12px;
+}
+.rag-hop-row.clickable {
+  cursor: pointer;
+}
+.rag-hop-row.clickable:hover {
+  background: #0f1a2b;
+}
+.rag-hop-badge {
+  font-size: 10px;
+  font-weight: 700;
+  color: #38bdf8;
+  background: #38bdf818;
+  padding: 2px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.rag-hop-reason {
+  color: #93c5fd;
+  font-weight: 600;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rag-hop-count {
+  font-size: 11px;
+  color: #4ade80;
+  background: #4ade8015;
+  padding: 1px 6px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+.rag-hop-chevron {
+  color: var(--text-dim);
+  margin-left: auto;
+  flex-shrink: 0;
+}
+.rag-hop-detail {
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 10px;
+  border: 1px solid #38bdf820;
+  background: #0b1220;
+  color: var(--text);
+  font-size: 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
 /* ── 流式光标 ── */
 .streaming-text {
   white-space: pre-wrap;

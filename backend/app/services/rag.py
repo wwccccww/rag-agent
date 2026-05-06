@@ -731,6 +731,126 @@ def multi_query_search(
     )[:top_k]
 
 
+def _suggest_next_hop_query(
+    ollama: OllamaClient,
+    question: str,
+    sources: list[dict[str, Any]],
+) -> tuple[str | None, str]:
+    """
+    基于首跳命中的片段，建议下一跳检索 query（用于 multi-hop RAG）。
+
+    Returns:
+        (next_query, reason)
+        next_query 为 None 表示不需要跳转或无法生成。
+    """
+    # 只截取少量片段与短 snippet，避免提示过长
+    ctx_lines: list[str] = []
+    for i, s in enumerate(sources[:6], start=1):
+        src = s.get("source") or "unknown"
+        sec = s.get("section_heading") or ""
+        snippet = (s.get("snippet") or s.get("full_content") or "").strip()
+        if len(snippet) > 260:
+            snippet = snippet[:260] + "…"
+        ctx_lines.append(f"[S{i}] {src} {sec}\n{snippet}")
+    ctx = "\n\n".join(ctx_lines) if ctx_lines else "(无检索片段)"
+
+    prompt = (
+        "你是一个检索编排器。用户问题可能需要两跳检索：先定位实体/主语，再查询其属性/偏好/细节。\n"
+        "请基于首跳检索到的片段，判断是否需要继续第二跳检索，并给出一个更具体的下一跳查询词。\n"
+        "只输出 JSON（不要 markdown、不要多余文字）。\n"
+        "格式：\n"
+        '{'
+        '"should_hop": true, '
+        '"next_query": "下一跳检索词（不超过30字）", '
+        '"reason": "一句话原因（不超过20字）"'
+        '}\n'
+        "若不需要跳转：should_hop=false 且 next_query=null。\n\n"
+        f"用户问题：{question[:300]}\n\n"
+        f"首跳片段：\n{ctx}\n\n"
+        "输出："
+    )
+
+    try:
+        raw = ollama.chat_complete_json([{"role": "user", "content": prompt}], temperature=0.0)
+        obj = json.loads(raw)
+        should = bool(obj.get("should_hop"))
+        nq = obj.get("next_query")
+        reason = str(obj.get("reason") or "").strip()[:60]
+        if not should:
+            return None, reason or "无需二跳"
+        if not isinstance(nq, str) or not nq.strip():
+            return None, reason or "二跳查询为空"
+        next_query = nq.strip()[:80]
+        # 防止生成与原问题完全一致导致无意义二次检索
+        if next_query == question.strip():
+            return None, reason or "二跳无增量"
+        return next_query, reason or "二跳检索"
+    except Exception as e:
+        logging.warning("[RAG] suggest_next_hop_query failed: %s", e)
+        return None, "二跳生成失败"
+
+
+def multi_hop_search(
+    db: Session,
+    ollama: OllamaClient,
+    question: str,
+    top_k: int,
+    kb_collection: str | None = None,
+    doc_types: list[str] | None = None,
+    *,
+    max_hops: int = 2,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """
+    Multi-hop RAG：最多两跳检索（首跳 + 可选二跳），并合并证据返回。
+
+    Returns:
+        (sources, hop_trace)
+        hop_trace 为 [{hop, query, count, reason}]，用于前端/日志展示。
+    """
+    hop_trace: list[dict[str, Any]] = []
+
+    t0 = time.perf_counter()
+    first = multi_query_search(db, ollama, question, top_k, kb_collection, doc_types)
+    telemetry.record_timing("rag.multihop.hop1_ms", (time.perf_counter() - t0) * 1000)
+    hop_trace.append({"hop": 1, "query": question, "count": len(first), "reason": "首跳检索"})
+
+    if max_hops <= 1 or not first:
+        telemetry.record_timing("rag.multihop.total_ms", (time.perf_counter() - t0) * 1000)
+        return first, hop_trace
+
+    # 二跳：用首跳片段建议更具体的 query
+    t_suggest = time.perf_counter()
+    next_query, reason = _suggest_next_hop_query(ollama, question, first)
+    telemetry.record_timing("rag.multihop.suggest_ms", (time.perf_counter() - t_suggest) * 1000)
+    if not next_query:
+        hop_trace.append({"hop": 2, "query": None, "count": 0, "reason": reason})
+        telemetry.record_timing("rag.multihop.total_ms", (time.perf_counter() - t0) * 1000)
+        return first, hop_trace
+
+    t1 = time.perf_counter()
+    second = multi_query_search(db, ollama, next_query, top_k, kb_collection, doc_types)
+    telemetry.record_timing("rag.multihop.hop2_ms", (time.perf_counter() - t1) * 1000)
+    hop_trace.append({"hop": 2, "query": next_query, "count": len(second), "reason": reason})
+
+    # 合并：按 chunk_id 去重，保留 rrf_score/score 更高的条目
+    merged: dict[str, dict[str, Any]] = {str(s["chunk_id"]): s for s in first}
+    for s in second:
+        cid = str(s["chunk_id"])
+        new_key = float(s.get("rrf_score") or s.get("score") or 0.0)
+        old_key = float(merged.get(cid, {}).get("rrf_score") or merged.get(cid, {}).get("score") or 0.0)
+        if cid not in merged or new_key > old_key:
+            merged[cid] = s
+
+    out = sorted(
+        merged.values(),
+        key=lambda x: float(x.get("rrf_score") or x.get("score") or 0.0),
+        reverse=True,
+    )[:top_k]
+
+    telemetry.record_timing("rag.multihop.total_ms", (time.perf_counter() - t0) * 1000)
+    return out, hop_trace
+
+
 def search_memories(
     db: Session,
     ollama: OllamaClient,

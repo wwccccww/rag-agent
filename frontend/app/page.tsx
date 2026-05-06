@@ -38,6 +38,13 @@ type AgentStep = {
   reasoning?: string;
 };
 
+type RagHop = {
+  hop?: number;
+  query?: string | null;
+  count?: number;
+  reason?: string;
+};
+
 type PlanStep = {
   id: number;
   description: string;
@@ -58,6 +65,7 @@ type ChatMsg = {
   role: "user" | "assistant";
   content: string;
   sources?: Source[];
+  ragHops?: RagHop[];
   streaming?: boolean;
   createdAt?: string;
   agentSteps?: AgentStep[];
@@ -641,6 +649,28 @@ export default function HomePage() {
           m.map((msg) => (msg.id === aId ? { ...msg, sources: srcs } : msg))
         );
       }
+      if (event === "rag_hop" && data && typeof data === "object") {
+        const d = data as RagHop & { session_id?: string };
+        // 按 assistant 消息聚合 hop 轨迹
+        setMessages((m) =>
+          m.map((msg) => {
+            if (msg.id !== aId) return msg;
+            const prev = msg.ragHops ?? [];
+            const next = [...prev, { hop: d.hop, query: d.query ?? null, count: d.count, reason: d.reason }];
+            // 去重：同 hop + query 只保留最后一个（避免重连/重放）
+            const seen = new Set<string>();
+            const dedup: RagHop[] = [];
+            for (let i = next.length - 1; i >= 0; i--) {
+              const k = `${next[i].hop ?? "?"}::${next[i].query ?? ""}`;
+              if (seen.has(k)) continue;
+              seen.add(k);
+              dedup.push(next[i]);
+            }
+            dedup.reverse();
+            return { ...msg, ragHops: dedup };
+          })
+        );
+      }
       if (event === "token" && data && typeof data === "object") {
         const delta = (data as { delta?: string }).delta ?? "";
         if (!delta) return;
@@ -1140,10 +1170,19 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
+  const [ragHopsOpen, setRagHopsOpen] = useState(false);
+  const [expandedHops, setExpandedHops] = useState<Set<number>>(new Set());
   const hasSources = (msg.sources?.length ?? 0) > 0;
 
   const toggleStep = (i: number) =>
     setExpandedSteps((prev) => {
+      const next = new Set(prev);
+      next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+
+  const toggleHop = (i: number) =>
+    setExpandedHops((prev) => {
       const next = new Set(prev);
       next.has(i) ? next.delete(i) : next.add(i);
       return next;
@@ -1165,6 +1204,46 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      {/* ── RAG Multi-hop 跳转轨迹 ── */}
+      {msg.role === "assistant" && msg.chatMode === "rag" && (msg.ragHops?.length ?? 0) > 0 && (
+        <div className="rag-hop-panel">
+          <button className="rag-hop-toggle" onClick={() => setRagHopsOpen((o) => !o)}>
+            🧭 RAG 跳转 {msg.ragHops!.length} 次 {ragHopsOpen ? "▲" : "▼"}
+          </button>
+          {ragHopsOpen && (
+            <div className="rag-hop-list">
+              {msg.ragHops!.map((h, i) => {
+                const isExpanded = expandedHops.has(i);
+                const q = (h.query ?? "").toString();
+                const hasDetail = q.length > 0;
+                return (
+                  <div key={i} className="rag-hop-row-wrap">
+                    <div
+                      className={`rag-hop-row${hasDetail ? " clickable" : ""}`}
+                      onClick={() => hasDetail && toggleHop(i)}
+                    >
+                      <span className="rag-hop-badge">Hop {h.hop ?? i + 1}</span>
+                      {typeof h.reason === "string" && h.reason.length > 0 && (
+                        <span className="rag-hop-reason">{h.reason}</span>
+                      )}
+                      {typeof h.count === "number" && (
+                        <span className="rag-hop-count">{h.count} 命中</span>
+                      )}
+                      {hasDetail && (
+                        <span className="rag-hop-chevron">{isExpanded ? "▲" : "▼"}</span>
+                      )}
+                    </div>
+                    {isExpanded && hasDetail && (
+                      <pre className="rag-hop-detail">{q}</pre>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
       {/* ── Plan & Execute 规划面板 ── */}
       {msg.role === "assistant" && msg.chatMode === "plan" && msg.planGoal && (
         <div className="plan-panel">

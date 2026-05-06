@@ -17,7 +17,7 @@ from app.schemas import AgentChatRequest, ChatStreamRequest, PlanExecuteRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
 from app.services.citation_guard import sanitize_assistant_citations
-from app.services.rag import multi_query_search, search_memories
+from app.services.rag import multi_hop_search, multi_query_search, search_memories
 from app.telemetry import telemetry
 from app.services.agent import run_agent
 from app.services.plan_execute import run_plan_execute
@@ -201,13 +201,28 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 def _timed_rag():
                     t0 = time.perf_counter()
                     try:
-                        return multi_query_search(
-                            db,
-                            client,
-                            body.message,
-                            top_k,
-                            body.kb_collection,
-                            list(body.doc_types) if body.doc_types else None,
+                        if getattr(settings, "rag_multihop_enabled", False):
+                            hops = int(getattr(settings, "rag_multihop_max_hops", 2) or 2)
+                            sources, hop_trace = multi_hop_search(
+                                db,
+                                client,
+                                body.message,
+                                top_k,
+                                body.kb_collection,
+                                list(body.doc_types) if body.doc_types else None,
+                                max_hops=max(1, min(2, hops)),
+                            )
+                            return sources, hop_trace
+                        return (
+                            multi_query_search(
+                                db,
+                                client,
+                                body.message,
+                                top_k,
+                                body.kb_collection,
+                                list(body.doc_types) if body.doc_types else None,
+                            ),
+                            [],
                         )
                     finally:
                         telemetry.record_timing("rag.search_ms", (time.perf_counter() - t0) * 1000)
@@ -221,8 +236,22 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
                 fut_sources = ex.submit(_timed_rag)
                 fut_mem = ex.submit(_timed_mem)
-                sources = fut_sources.result()
+                sources, hop_trace = fut_sources.result()
                 mem_lines = fut_mem.result()
+
+            # ── Multi-hop trace（可选，前端可忽略未知事件）──────────────────────
+            if hop_trace:
+                for h in hop_trace:
+                    yield _sse(
+                        "rag_hop",
+                        {
+                            "session_id": str(sid),
+                            "hop": h.get("hop"),
+                            "query": h.get("query"),
+                            "count": h.get("count"),
+                            "reason": h.get("reason"),
+                        },
+                    )
 
             pub_sources = [
                 {

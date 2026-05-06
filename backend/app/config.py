@@ -76,6 +76,12 @@ class Settings(BaseSettings):
     # 触发同文档补位：该文档在 Top-K 中已有 chunk 的向量相似度至少达到此值（0–1）
     rag_same_doc_expand_min_vec: float = 0.32
 
+    # ── Multi-hop RAG（两跳检索编排）──────────────────────────────────────────
+    # 开启后：RAG 模式在首跳检索后，用 LLM 基于命中片段生成下一跳 query，再检索一次并合并证据。
+    rag_multihop_enabled: bool = True
+    # 最大跳数（当前实现支持 1 或 2；>2 会按 2 处理）
+    rag_multihop_max_hops: int = 2
+
     # ── Parent-Child 分块 ─────────────────────────────────────────────────────
     # 开启后：按 Markdown 层级先切「父块」（200–1500 字），再将每个父块内部切成更小的「子块」
     # 子块参与向量/文本检索，命中后用父块喂给模型，兼顾检索精度与上下文完整性
