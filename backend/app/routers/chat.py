@@ -196,8 +196,23 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             )
             hist = list(reversed(rows))
 
-            # ── 并行执行 RAG 检索 + 记忆检索 ─────────────────────────
-            with ThreadPoolExecutor(max_workers=2) as ex:
+            # ── 并行执行 RAG 检索 + 记忆检索 + 自动记忆写入 ─────────────
+            mem_result: dict | None = None
+
+            def _timed_mem_write():
+                """自动记忆/KG 写入：使用独立的 DB session 和 OllamaClient，避免线程争用。"""
+                _db2 = SessionLocal()
+                _client2 = OllamaClient()
+                try:
+                    return maybe_auto_memory(_db2, _client2, body.user_id, body.message)
+                except Exception as _e:
+                    logging.warning("[Memory] auto-memory parallel failed: %s", _e)
+                    return None
+                finally:
+                    _client2.close()
+                    _db2.close()
+
+            with ThreadPoolExecutor(max_workers=3) as ex:
                 def _timed_rag():
                     t0 = time.perf_counter()
                     try:
@@ -236,8 +251,13 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
 
                 fut_sources = ex.submit(_timed_rag)
                 fut_mem = ex.submit(_timed_mem)
+                fut_mem_write = ex.submit(_timed_mem_write)
                 sources, hop_trace = fut_sources.result()
                 mem_lines = fut_mem.result()
+                mem_result = fut_mem_write.result()
+
+            mem_written = mem_result.get("memory") if isinstance(mem_result, dict) else None
+            kg_written = mem_result.get("kg") if isinstance(mem_result, dict) else None
 
             # ── Multi-hop trace（可选，前端可忽略未知事件）──────────────────────
             if hop_trace:
@@ -272,7 +292,16 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 yield _sse("token", {"delta": no_content_reply})
                 db.add(Message(session_id=sid, role="assistant", content=no_content_reply))
                 db.commit()
-                yield _sse("final", {"session_id": str(sid), "memory_writes": []})
+                yield _sse(
+                    "final",
+                    {
+                        "session_id": str(sid),
+                        "memory_writes": [mem_written] if mem_written else [],
+                        "kg_writes": [kg_written]
+                        if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0))
+                        else [],
+                    },
+                )
                 return
 
             t_prompt = time.perf_counter()
@@ -316,8 +345,6 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             db.add(Message(session_id=sid, role="assistant", content=full_out))
             db.commit()
 
-            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
-
             # ── 新会话：生成语义标题 ──────────────────────────────────
             session_title: str | None = None
             if is_new_session:
@@ -328,6 +355,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
             final_payload: dict = {
                 "session_id": str(sid),
                 "memory_writes": [mem_written] if mem_written else [],
+                "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
             }
             if session_title:
@@ -469,7 +497,9 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             ))
             db.commit()
 
-            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
+            mem_result = maybe_auto_memory(db, client, body.user_id, body.message)
+            mem_written = mem_result.get("memory") if isinstance(mem_result, dict) else None
+            kg_written = mem_result.get("kg") if isinstance(mem_result, dict) else None
 
             # ── 新会话：生成语义标题 ──────────────────────────────────
             session_title: str | None = None
@@ -481,6 +511,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             final_payload: dict = {
                 "session_id": str(sid),
                 "memory_writes": [mem_written] if mem_written else [],
+                "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
             }
             if session_title:
@@ -656,7 +687,9 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
             ))
             db.commit()
 
-            mem_written = maybe_auto_memory(db, client, body.user_id, body.message)
+            mem_result = maybe_auto_memory(db, client, body.user_id, body.message)
+            mem_written = mem_result.get("memory") if isinstance(mem_result, dict) else None
+            kg_written = mem_result.get("kg") if isinstance(mem_result, dict) else None
 
             session_title: str | None = None
             if is_new_session:
@@ -667,6 +700,7 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
             final_payload: dict = {
                 "session_id": str(sid),
                 "memory_writes": [mem_written] if mem_written else [],
+                "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
             }
             if session_title:

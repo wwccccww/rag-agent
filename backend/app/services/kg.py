@@ -66,10 +66,19 @@ def _extract_json_block(raw: str) -> dict:
     if text.startswith("```"):
         lines = text.splitlines()
         text = "\n".join(l for l in lines if not l.startswith("```")).strip()
+    # 有些模型会输出多段 JSON 或在前后加解释，取第一个 { 到最后一个 }
+    # 并尝试去掉尾部多余内容
     start, end = text.find("{"), text.rfind("}")
     if start != -1 and end != -1:
         text = text[start: end + 1]
-    return json.loads(text)
+    # 进一步容错：若仍解析失败，尝试抓取 "entities"/"relations" 所在的对象块
+    try:
+        return json.loads(text)
+    except Exception:
+        m = re.search(r"\{[\s\S]*?\"entities\"[\s\S]*?\"relations\"[\s\S]*?\}", text)
+        if m:
+            return json.loads(m.group(0))
+        raise
 
 
 def extract_triples(
@@ -84,20 +93,25 @@ def extract_triples(
         entities: [{"name": str, "type": str}]
         relations: [{"subject": str, "predicate": str, "object": str, "confidence": float}]
     """
-    prompt = _EXTRACT_PROMPT.format(text=user_text[:2000])
+    prompt = _EXTRACT_PROMPT.replace("{text}", user_text[:2000])
     try:
-        raw = ollama.chat_complete(
+        # 使用 chat_complete_json 强制 Ollama 输出合法 JSON，避免截断/格式错误
+        raw = ollama.chat_complete_json(
             [{"role": "user", "content": prompt}],
             temperature=0.0,
         )
+        logger.info("[KG] extract_triples raw response: %r", raw[:300])
         obj = _extract_json_block(raw)
+        if not isinstance(obj, dict):
+            logger.warning("[KG] LLM returned non-dict: %r", type(obj).__name__)
+            return [], []
         entities = [
             e for e in obj.get("entities", [])
-            if isinstance(e.get("name"), str) and e["name"].strip()
+            if isinstance(e, dict) and isinstance(e.get("name"), str) and e["name"].strip()
         ]
         relations = [
             r for r in obj.get("relations", [])
-            if all(isinstance(r.get(k), (str, float, int)) for k in ("subject", "predicate", "object"))
+            if isinstance(r, dict) and all(isinstance(r.get(k), (str, float, int)) for k in ("subject", "predicate", "object"))
         ]
         # 规范化实体类型
         for e in entities:
@@ -107,7 +121,8 @@ def extract_triples(
         logger.info("[KG] extracted %d entities, %d relations from text", len(entities), len(relations))
         return entities, relations
     except Exception as ex:
-        logger.warning("[KG] triple extraction failed: %s", ex)
+        import traceback as _tb
+        logger.warning("[KG] triple extraction failed: %r\n%s", ex, _tb.format_exc())
         return [], []
 
 
@@ -240,12 +255,14 @@ def save_triples(
     # 先建立实体 name → KGEntity 的映射
     name_to_entity: dict[str, KGEntity] = {}
     for e in entities:
-        name = e["name"].strip()
+        if not isinstance(e, dict):
+            continue
+        name = str(e.get("name") or "").strip()
         if not name:
             continue
         try:
             ent = upsert_entity(
-                db, ollama, user_id, name, e.get("type", "other"), dedup_threshold
+                db, ollama, user_id, name, str(e.get("type") or "other"), dedup_threshold
             )
             name_to_entity[name] = ent
         except Exception as ex:
@@ -254,10 +271,15 @@ def save_triples(
     # 写入关系
     count = 0
     for r in relations:
-        subj_name = r.get("subject", "").strip()
-        obj_name = r.get("object", "").strip()
-        predicate = r.get("predicate", "").strip()[:128]
-        confidence = float(r.get("confidence", 1.0))
+        if not isinstance(r, dict):
+            continue
+        subj_name = str(r.get("subject") or "").strip()
+        obj_name = str(r.get("object") or "").strip()
+        predicate = str(r.get("predicate") or "").strip()[:128]
+        try:
+            confidence = float(r.get("confidence") or 1.0)
+        except (TypeError, ValueError):
+            confidence = 1.0
 
         if not subj_name or not obj_name or not predicate:
             continue
@@ -274,12 +296,18 @@ def save_triples(
             except Exception:
                 continue
 
+        subj_ent = name_to_entity.get(subj_name)
+        obj_ent = name_to_entity.get(obj_name)
+        if not subj_ent or not obj_ent:
+            logger.warning("[KG] skip relation %r→%r: entity missing after upsert", subj_name, obj_name)
+            continue
+
         try:
             upsert_relation(
                 db, user_id,
-                subject_id=name_to_entity[subj_name].id,
+                subject_id=subj_ent.id,
                 predicate=predicate,
-                object_id=name_to_entity[obj_name].id,
+                object_id=obj_ent.id,
                 confidence=confidence,
                 source_memory_id=source_memory_id,
             )

@@ -60,6 +60,8 @@ type ChatMode = "rag" | "agent" | "plan";
 
 type MsgStats = { tokens: number; tok_per_sec: number };
 
+type KGWrite = { entities?: number; relations?: number; subject?: string | null };
+
 type ChatMsg = {
   id: number;
   role: "user" | "assistant";
@@ -71,6 +73,8 @@ type ChatMsg = {
   agentSteps?: AgentStep[];
   chatMode?: ChatMode;
   stats?: MsgStats;
+  memoryWrites?: string[];
+  kgWrites?: KGWrite[];
   /** Plan & Execute 模式专属 */
   planGoal?: string;
   planSteps?: PlanStep[];
@@ -681,6 +685,7 @@ export default function HomePage() {
       if (event === "final" && data && typeof data === "object") {
         const d = data as {
           memory_writes?: string[];
+          kg_writes?: KGWrite[];
           session_title?: string;
           stats?: MsgStats;
           assistant_content?: string;
@@ -689,6 +694,24 @@ export default function HomePage() {
         if (writes.length > 0) {
           setMemToast(`💾 已记住：${writes[0]}`);
           setTimeout(() => setMemToast(null), 5000);
+        }
+        const kgWrites = d.kg_writes ?? [];
+        if (kgWrites.length > 0) {
+          const k0 = kgWrites[0] ?? {};
+          const subj = typeof k0.subject === "string" && k0.subject ? `（${k0.subject}）` : "";
+          const ent = typeof k0.entities === "number" ? k0.entities : 0;
+          const rel = typeof k0.relations === "number" ? k0.relations : 0;
+          setMemToast(`🔗 已写入图谱${subj}：实体 ${ent}，关系 ${rel}`);
+          setTimeout(() => setMemToast(null), 5000);
+        }
+        if (writes.length > 0 || kgWrites.length > 0) {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === aId
+                ? { ...msg, memoryWrites: writes.length > 0 ? writes : undefined, kgWrites: kgWrites.length > 0 ? kgWrites : undefined }
+                : msg
+            )
+          );
         }
         if (d.session_title) {
           const title = d.session_title;
@@ -1201,6 +1224,7 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
   };
 
   const timeStr = formatTime(msg.createdAt);
+  const hasWrites = (msg.memoryWrites?.length ?? 0) > 0 || (msg.kgWrites?.length ?? 0) > 0;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
@@ -1385,6 +1409,28 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
               {msg.role === "assistant"
                 ? <MarkdownContent content={msg.content} sources={msg.sources} onCiteClick={handleCiteClick} />
                 : msg.content}
+            </div>
+          )}
+          {!msg.streaming && msg.role === "assistant" && hasWrites && (
+            <div className="writeback-panel">
+              {(msg.memoryWrites?.length ?? 0) > 0 && (
+                <div className="writeback-row">
+                  <span className="writeback-badge">💾 记忆</span>
+                  <span className="writeback-text">{msg.memoryWrites![0]}</span>
+                </div>
+              )}
+              {(msg.kgWrites?.length ?? 0) > 0 && (
+                <div className="writeback-row">
+                  <span className="writeback-badge">🔗 图谱</span>
+                  {(() => {
+                    const k0 = msg.kgWrites![0] ?? {};
+                    const subj = typeof k0.subject === "string" && k0.subject ? `（${k0.subject}）` : "";
+                    const ent = typeof k0.entities === "number" ? k0.entities : 0;
+                    const rel = typeof k0.relations === "number" ? k0.relations : 0;
+                    return <span className="writeback-text">已写入{subj}：实体 {ent}，关系 {rel}</span>;
+                  })()}
+                </div>
+              )}
             </div>
           )}
           {!msg.streaming && (
