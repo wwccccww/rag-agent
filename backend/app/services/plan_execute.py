@@ -24,6 +24,7 @@ import logging
 import re
 import time
 from typing import Any, Generator
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -209,6 +210,8 @@ def run_plan_execute(
     session_summary: str | None,
     kb_collection: str | None = None,
     doc_types: list[str] | None = None,
+    session_id: UUID | None = None,
+    request_id: str | None = None,
 ) -> Generator[dict[str, Any], None, None]:
     """
     Plan & Execute 主循环 Generator。
@@ -282,6 +285,9 @@ def run_plan_execute(
                 top_k=top_k,
                 kb_collection=kb_collection,
                 doc_types=doc_types,
+                session_id=session_id,
+                mode="plan",
+                request_id=request_id,
             )
             success = True
         except Exception as e:

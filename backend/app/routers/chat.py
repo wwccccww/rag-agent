@@ -4,6 +4,7 @@ import time
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
+import uuid
 from uuid import UUID
 
 from fastapi import APIRouter
@@ -431,6 +432,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             steps_trace: list[dict] = []
 
             t_agent = time.perf_counter()
+            req_id = uuid.uuid4().hex[:16]
             for event in run_agent(
                 db=db,
                 ollama=client,
@@ -441,6 +443,9 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 session_summary=sess.summary or None,
                 kb_collection=body.kb_collection,
                 doc_types=list(body.doc_types) if body.doc_types else None,
+                session_id=sid,
+                request_id=req_id,
+                mode="agent",
             ):
                 etype = event.get("type", "")
 
@@ -590,6 +595,7 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
             plan_steps: list[dict] = []
 
             t_pe = time.perf_counter()
+            req_id = uuid.uuid4().hex[:16]
             for event in run_plan_execute(
                 db=db,
                 ollama=client,
@@ -600,6 +606,8 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
                 session_summary=sess.summary or None,
                 kb_collection=body.kb_collection,
                 doc_types=list(body.doc_types) if body.doc_types else None,
+                session_id=sid,
+                request_id=req_id,
             ):
                 etype = event.get("type", "")
 

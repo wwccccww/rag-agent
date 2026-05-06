@@ -168,3 +168,31 @@ class KGRelation(Base):
 
     subject: Mapped["KGEntity"] = relationship("KGEntity", foreign_keys=[subject_id], back_populates="outgoing")
     object_entity: Mapped["KGEntity"] = relationship("KGEntity", foreign_keys=[object_id], back_populates="incoming")
+
+
+class ToolAuditLog(Base):
+    """
+    工具审计日志：记录每一次 Agent / Plan&Execute / RAG 的工具调用。
+    用于权限审计、问题回放与安全溯源（不是聚合指标）。
+    """
+    __tablename__ = "tool_audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    # rag / agent / plan / system
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, default="agent", index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    tool: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    tool_args: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    args_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok", index=True)  # ok|denied|error|timeout
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elapsed_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    result_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    sources_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

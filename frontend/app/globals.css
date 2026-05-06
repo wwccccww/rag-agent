@@ -1869,3 +1869,76 @@ a:hover { text-decoration: underline; }
 .kg-rel-meta {
   margin-top: 6px;
 }
+
+/* ── Audit page ── */
+.audit-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.audit-toolbar .text-input {
+  max-width: 220px;
+}
+.audit-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--panel);
+}
+.audit-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+.audit-table th,
+.audit-table td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+}
+.audit-table thead th {
+  background: rgba(79, 158, 255, 0.08);
+  color: var(--text-muted);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+.audit-row.denied td { background: rgba(245, 158, 11, 0.06); }
+.audit-row.error td { background: rgba(248, 81, 73, 0.06); }
+.audit-row.ok td { background: transparent; }
+.audit-pill {
+  display: inline-flex;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  font-weight: 700;
+  font-size: 10px;
+}
+.audit-pill.ok { color: #4ade80; background: #4ade8015; border-color: #4ade8040; }
+.audit-pill.denied { color: #f59e0b; background: #f59e0b15; border-color: #f59e0b40; }
+.audit-pill.error { color: #f87171; background: #f8717115; border-color: #f8717140; }
+.audit-mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; color: var(--text-dim); }
+.audit-detail-row td { background: rgba(0, 0, 0, 0.18); }
+.audit-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+@media (max-width: 920px) {
+  .audit-detail-grid { grid-template-columns: 1fr; }
+}
+.audit-pre {
+  margin: 6px 0 0;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid var(--border-light);
+  background: #0b1220;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 320px;
+  overflow: auto;
+}
+.audit-mt10 { margin-top: 10px; }

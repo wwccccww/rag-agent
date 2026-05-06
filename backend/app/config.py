@@ -138,6 +138,19 @@ class Settings(BaseSettings):
     # Reflection：每轮工具执行后评估信息是否充足，充足则提前终止循环（会增加一次 LLM 调用耗时）
     agent_reflection_enabled: bool = True
 
+    # ── 边界治理：权限分级 / 失败兜底 / 审计 ──────────────────────────────────
+    # 工具策略级别：
+    #   low    - 本地开发：允许全部工具
+    #   medium - 默认：禁止 python_repl；允许 fetch_url；web_search 可选
+    #   high   - 保守：仅允许离线工具（kb/memory/datetime/calculate）
+    tool_policy_level: str = "medium"
+    # medium 下是否允许 web_search（联网搜索）。默认关闭，避免网络不稳定/审计风险。
+    web_search_enabled: bool = False
+    # 工具调用最大次数（跨多轮 tool_calls 累计）；超过会被拒绝并审计。
+    tool_max_calls: int = 12
+    # 工具结果预览存入审计日志的最大字符数
+    tool_audit_preview_chars: int = 800
+
     # ── 知识图谱（轻量级，存储于 PostgreSQL）──────────────────────────────────
     # 总开关：False 时跳过所有 KG 操作（search_memories 退化为纯向量搜索）
     kg_enabled: bool = True

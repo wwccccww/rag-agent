@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, init_db
-from app.routers import chat, docs, health, ingest, memory, metrics, sessions, stats
+from app.routers import audit, chat, docs, health, ingest, memory, metrics, sessions, stats
 from app.services.reranker import warmup as warmup_reranker
 
 logging.basicConfig(level=logging.INFO)
@@ -37,6 +37,7 @@ app.include_router(metrics.router)
 app.include_router(ingest.router)
 app.include_router(chat.router)
 app.include_router(memory.router)
+app.include_router(audit.router)
 app.include_router(docs.router)
 app.include_router(sessions.router)
 app.include_router(stats.router)

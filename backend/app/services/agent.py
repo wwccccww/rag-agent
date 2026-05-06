@@ -30,6 +30,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from typing import Any, Generator
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -43,6 +44,8 @@ from app.services.security import (
     sanitize_user_input,
 )
 from app.telemetry import telemetry
+from app.services.tool_audit import ToolAuditSpan, record_tool_audit
+from app.services.tool_policy import get_tool_policy
 
 # ── Web Search（多后端 + 优雅降级）──────────────────────────────────────────
 def _web_search(query: str, max_results: int = 5) -> str:
@@ -590,57 +593,244 @@ def _execute_tool(
     top_k: int,
     kb_collection: str | None,
     doc_types: list[str] | None,
+    *,
+    session_id: UUID | None = None,
+    mode: str = "agent",
+    request_id: str | None = None,
 ) -> tuple[str, list[dict]]:
     """执行单个工具，返回 (文本结果, sources列表)。"""
+    policy = get_tool_policy()
+    if tool_name not in policy.allowed_tools:
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="denied",
+            error=f"tool denied by policy level={policy.level}",
+            elapsed_ms=0.0,
+            result_preview=None,
+            sources_count=0,
+        )
+        return f"⚠️ 工具已被策略禁止（level={policy.level}）：{tool_name}", []
+
+    span = ToolAuditSpan()
     if tool_name == "search_knowledge_base":
         query = str(tool_args.get("query", "")).strip()
         if not query:
+            record_tool_audit(
+                db,
+                user_id=user_id,
+                session_id=session_id,
+                mode=mode,
+                request_id=request_id,
+                tool=tool_name,
+                tool_args=tool_args,
+                status="error",
+                error="empty query",
+                elapsed_ms=span.elapsed_ms(),
+                result_preview="查询词为空，无法搜索。",
+                sources_count=0,
+            )
             return "查询词为空，无法搜索。", []
         results = multi_query_search(db, ollama, query, top_k, kb_collection, doc_types)
         if not results:
+            record_tool_audit(
+                db,
+                user_id=user_id,
+                session_id=session_id,
+                mode=mode,
+                request_id=request_id,
+                tool=tool_name,
+                tool_args=tool_args,
+                status="ok",
+                elapsed_ms=span.elapsed_ms(),
+                result_preview="知识库中未找到与该查询相关的内容。",
+                sources_count=0,
+            )
             return "知识库中未找到与该查询相关的内容。", []
         parts = []
         for i, r in enumerate(results, 1):
             sec = r.get("section_heading")
             sec_line = f" · 节：{sec}" if isinstance(sec, str) and sec.strip() else ""
             parts.append(f"[S{i}] 来源：{r['source']}{sec_line}\n{r['full_content']}")
-        return "\n\n".join(parts), results
+        out = "\n\n".join(parts)
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=out,
+            sources_count=len(results),
+        )
+        return out, results
 
     if tool_name == "recall_user_memory":
         query = str(tool_args.get("query", "")).strip()
         lines = search_memories(db, ollama, user_id, query, top_k=5)
         if not lines:
+            record_tool_audit(
+                db,
+                user_id=user_id,
+                session_id=session_id,
+                mode=mode,
+                request_id=request_id,
+                tool=tool_name,
+                tool_args=tool_args,
+                status="ok",
+                elapsed_ms=span.elapsed_ms(),
+                result_preview="未查找到相关的用户记忆。",
+                sources_count=0,
+            )
             return "未查找到相关的用户记忆。", []
-        return "\n".join(lines), []
+        out = "\n".join(lines)
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=out,
+            sources_count=0,
+        )
+        return out, []
 
     if tool_name == "get_current_datetime":
         now = datetime.now(timezone.utc).strftime("%Y年%m月%d日 %H:%M (UTC)")
-        return f"当前时间：{now}", []
+        out = f"当前时间：{now}"
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=out,
+            sources_count=0,
+        )
+        return out, []
 
     if tool_name == "web_search":
         query = str(tool_args.get("query", "")).strip()
         if not query:
+            record_tool_audit(
+                db,
+                user_id=user_id,
+                session_id=session_id,
+                mode=mode,
+                request_id=request_id,
+                tool=tool_name,
+                tool_args=tool_args,
+                status="error",
+                error="empty query",
+                elapsed_ms=span.elapsed_ms(),
+                result_preview="查询词为空，无法搜索。",
+                sources_count=0,
+            )
             return "查询词为空，无法搜索。", []
         raw = _web_search(query)
         # 扫描搜索结果中的间接注入
         safe = sanitize_external_content(raw, source_label=f"web_search:{query[:40]}")
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=safe,
+            sources_count=0,
+        )
         return safe, []
 
     if tool_name == "python_repl":
         code = str(tool_args.get("code", "")).strip()
-        return _python_repl(code), []
+        out = _python_repl(code)
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=out,
+            sources_count=0,
+        )
+        return out, []
 
     if tool_name == "fetch_url":
         url = str(tool_args.get("url", "")).strip()
         raw = _fetch_url(url)
         # 扫描网页正文中的间接注入
         safe = sanitize_external_content(raw, source_label=f"fetch_url:{url[:60]}")
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=safe,
+            sources_count=0,
+        )
         return safe, []
 
     if tool_name == "calculate":
         expression = str(tool_args.get("expression", "")).strip()
-        return _calculate(expression), []
+        out = _calculate(expression)
+        record_tool_audit(
+            db,
+            user_id=user_id,
+            session_id=session_id,
+            mode=mode,
+            request_id=request_id,
+            tool=tool_name,
+            tool_args=tool_args,
+            status="ok",
+            elapsed_ms=span.elapsed_ms(),
+            result_preview=out,
+            sources_count=0,
+        )
+        return out, []
 
+    record_tool_audit(
+        db,
+        user_id=user_id,
+        session_id=session_id,
+        mode=mode,
+        request_id=request_id,
+        tool=tool_name,
+        tool_args=tool_args,
+        status="error",
+        error="unknown tool",
+        elapsed_ms=span.elapsed_ms(),
+        result_preview=f"未知工具：{tool_name}",
+        sources_count=0,
+    )
     return f"未知工具：{tool_name}", []
 
 
@@ -654,6 +844,9 @@ def run_agent(
     session_summary: str | None,
     kb_collection: str | None = None,
     doc_types: list[str] | None = None,
+    session_id: UUID | None = None,
+    request_id: str | None = None,
+    mode: str = "agent",
 ) -> Generator[dict[str, Any], None, None]:
     """
     Agent 主循环 Generator，集成三种推理策略：
@@ -764,6 +957,7 @@ def run_agent(
     messages.append({"role": "user", "content": message})
 
     # ── 5. ReAct 主循环 ───────────────────────────────────────────────────────
+    tool_calls_total = 0
     for iteration in range(MAX_ITERATIONS):
         # ── LLM 决策：选择工具或直接回答 ─────────────────────────────────
         try:
@@ -809,9 +1003,37 @@ def run_agent(
 
             t0 = time.perf_counter()
             try:
-                result_text, sources = _execute_tool(
-                    db, ollama, user_id, tool_name, tool_args, top_k, kb_collection, doc_types
-                )
+                tool_calls_total += 1
+                if tool_calls_total > int(getattr(settings, "tool_max_calls", 12) or 12):
+                    result_text, sources = "⚠️ 工具调用次数已超过上限，已停止继续调用。", []
+                    record_tool_audit(
+                        db,
+                        user_id=user_id,
+                        session_id=session_id,
+                        mode=mode,
+                        request_id=request_id,
+                        tool=tool_name,
+                        tool_args=tool_args,
+                        status="denied",
+                        error="tool_max_calls exceeded",
+                        elapsed_ms=0.0,
+                        result_preview=result_text,
+                        sources_count=0,
+                    )
+                else:
+                    result_text, sources = _execute_tool(
+                        db,
+                        ollama,
+                        user_id,
+                        tool_name,
+                        tool_args,
+                        top_k,
+                        kb_collection,
+                        doc_types,
+                        session_id=session_id,
+                        mode=mode,
+                        request_id=request_id,
+                    )
             except Exception as e:
                 result_text = f"工具执行出错：{e}"
                 sources = []

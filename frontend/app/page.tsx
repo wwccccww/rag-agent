@@ -875,6 +875,7 @@ export default function HomePage() {
             <a href="/documents" className="btn" style={{ width: "100%", justifyContent: "center" }}>🔍 查看文档库</a>
             <a href={`/memory?user_id=${userId}`} className="btn" style={{ width: "100%", justifyContent: "center" }}>🧠 查看记忆</a>
             <a href={`/kg?user_id=${userId}`} className="btn" style={{ width: "100%", justifyContent: "center" }}>🔗 知识图谱</a>
+            <a href={`/audit`} className="btn" style={{ width: "100%", justifyContent: "center" }}>🧾 工具审计</a>
             <a href="/stats" className="btn" style={{ width: "100%", justifyContent: "center" }}>📊 系统统计</a>
             <button className="btn" style={{ width: "100%", justifyContent: "center" }} onClick={pingHealth} disabled={healthLoading}>
               {healthLoading ? "检查中…" : "⚡ 健康检查"}

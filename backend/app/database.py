@@ -196,6 +196,26 @@ def ensure_indexes() -> None:
         except Exception as e:
             logging.warning("[DB] HNSW index failed for %s: %s", idx_name, e)
 
+    # Tool audit logs：索引（表由 ORM create_all 创建；这里做补充索引幂等）
+    try:
+        with engine.connect() as conn:
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_tool_audit_user_session "
+                "ON tool_audit_logs (user_id, session_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_tool_audit_tool_ts "
+                "ON tool_audit_logs (tool, created_at)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_tool_audit_request "
+                "ON tool_audit_logs (request_id)"
+            ))
+            conn.commit()
+        logging.info("[DB] tool_audit_logs indexes ready")
+    except Exception as e:
+        logging.warning("[DB] tool_audit_logs indexes failed: %s", e)
+
 
 def init_db() -> None:
     """建表 + 启用扩展 + 创建索引，失败只记日志不崩溃"""
