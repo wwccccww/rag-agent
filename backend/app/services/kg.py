@@ -27,6 +27,9 @@ from app.services.ollama import OllamaClient
 
 logger = logging.getLogger(__name__)
 
+# 特殊“自我”实体：用于表达「我-同事->李四」这类关系
+_SELF_ENTITY_NAME = "__self__"
+
 # ══════════════════════════════════════════════════════
 # 三元组提取
 # ══════════════════════════════════════════════════════
@@ -58,6 +61,15 @@ _EXTRACT_PROMPT = """\
 _VALID_ENTITY_TYPES = frozenset([
     "person", "project", "technology", "organization", "concept", "event", "other"
 ])
+
+# 关系词/角色词：不应被当作实体节点写入图谱（例如“李四是同事”不应产生实体“同事”）
+_ROLE_WORDS = frozenset([
+    "朋友", "同事", "同学", "室友", "导师", "老师", "家人", "同伴", "同僚",
+])
+_COPULA_PREDICATES = frozenset(["是", "不是", "为", "属于", "算是", "并非"])
+
+# 自我指代：不应以普通实体名“我”写入（应统一映射为 __self__）
+_SELF_SYNONYMS = frozenset(["我", "自己", "本人", "咱", "咱们", "我们", "俺"])
 
 
 def _extract_json_block(raw: str) -> dict:
@@ -113,6 +125,47 @@ def extract_triples(
             r for r in obj.get("relations", [])
             if isinstance(r, dict) and all(isinstance(r.get(k), (str, float, int)) for k in ("subject", "predicate", "object"))
         ]
+
+        # 过滤：把“朋友/同事/同学...”这类角色词从实体/关系中剔除（避免产生脏节点）
+        def _norm_name(x: Any) -> str:
+            return str(x or "").strip()
+
+        filtered_entities: list[dict[str, Any]] = []
+        for e in entities:
+            name = _norm_name(e.get("name"))
+            if not name:
+                continue
+            if name in _SELF_SYNONYMS:
+                # “我/自己”由调用方映射到 __self__，不作为普通实体写入
+                continue
+            if name in _ROLE_WORDS:
+                continue
+            filtered_entities.append(e)
+        entities = filtered_entities
+
+        filtered_relations: list[dict[str, Any]] = []
+        for r in relations:
+            subj = _norm_name(r.get("subject"))
+            pred = _norm_name(r.get("predicate"))
+            objn = _norm_name(r.get("object"))
+            # 自我指代不参与三元组直接落库（由调用方映射 __self__ 再写入）
+            if subj in _SELF_SYNONYMS or objn in _SELF_SYNONYMS:
+                continue
+            # 1) 任何一端是角色词直接丢弃（防止“李四--是-->同事/朋友”）
+            if subj in _ROLE_WORDS or objn in _ROLE_WORDS:
+                continue
+            # 2) “是/不是/属于...”这类系词关系且 object 看起来像角色词（被模型加了修饰）也丢弃
+            #    如 “李四 --[是]--> 我的同事”
+            if pred in _COPULA_PREDICATES:
+                for w in _ROLE_WORDS:
+                    if w in objn:
+                        break
+                else:
+                    filtered_relations.append(r)
+                continue
+            filtered_relations.append(r)
+        relations = filtered_relations
+
         # 规范化实体类型
         for e in entities:
             e["type"] = e.get("type", "other").lower()
@@ -185,6 +238,65 @@ def upsert_entity(
     logger.debug("[KG] entity created: %s (%s) id=%s", name, entity_type, entity.id)
     return entity
 
+
+def get_self_entity(db: Session, ollama: OllamaClient, user_id: str) -> KGEntity:
+    """
+    获取或创建“自我”实体，用于存储用户与他人的关系边。
+    该实体对每个 user_id 唯一：name 固定为 __self__，attrs 记录 user_id。
+    """
+    existing = db.execute(
+        select(KGEntity)
+        .where(KGEntity.user_id == user_id)
+        .where(KGEntity.name == _SELF_ENTITY_NAME)
+        .limit(1)
+    ).scalar_one_or_none()
+    if existing:
+        return existing
+
+    # embedding 使用稳定 label，避免因 user_id 不同导致语义漂移
+    emb = ollama.embed("我 (self person)"[:500], apply_embed_budget=False)
+    e = KGEntity(
+        user_id=user_id,
+        name=_SELF_ENTITY_NAME,
+        entity_type="person",
+        attrs={"user_id": user_id, "label": "我", "system": True},
+        embedding=emb,
+    )
+    db.add(e)
+    db.commit()
+    db.refresh(e)
+    return e
+
+
+def upsert_relation_by_names(
+    db: Session,
+    ollama: OllamaClient,
+    user_id: str,
+    subject_name: str,
+    subject_type: str,
+    predicate: str,
+    object_name: str,
+    object_type: str,
+    confidence: float = 0.9,
+    source_memory_id: uuid.UUID | None = None,
+    dedup_threshold: float = 0.15,
+) -> KGRelation | None:
+    """便捷方法：按名字 upsert 两端实体并写关系。"""
+    try:
+        subj = upsert_entity(db, ollama, user_id, subject_name, subject_type, dedup_threshold)
+        obj = upsert_entity(db, ollama, user_id, object_name, object_type, dedup_threshold)
+        return upsert_relation(
+            db,
+            user_id,
+            subject_id=subj.id,
+            predicate=predicate[:128],
+            object_id=obj.id,
+            confidence=float(confidence),
+            source_memory_id=source_memory_id,
+        )
+    except Exception as ex:
+        logger.warning("[KG] upsert_relation_by_names failed: %r", ex)
+        return None
 
 def upsert_relation(
     db: Session,
@@ -260,6 +372,10 @@ def save_triples(
         name = str(e.get("name") or "").strip()
         if not name:
             continue
+        if name in _SELF_SYNONYMS or name == _SELF_ENTITY_NAME:
+            # “我/自己/__self__”统一使用系统 self 节点
+            name_to_entity[name] = get_self_entity(db, ollama, user_id)
+            continue
         try:
             ent = upsert_entity(
                 db, ollama, user_id, name, str(e.get("type") or "other"), dedup_threshold
@@ -283,6 +399,12 @@ def save_triples(
 
         if not subj_name or not obj_name or not predicate:
             continue
+
+        # 自我指代统一映射到 self 节点
+        if subj_name in _SELF_SYNONYMS or subj_name == _SELF_ENTITY_NAME:
+            name_to_entity[subj_name] = get_self_entity(db, ollama, user_id)
+        if obj_name in _SELF_SYNONYMS or obj_name == _SELF_ENTITY_NAME:
+            name_to_entity[obj_name] = get_self_entity(db, ollama, user_id)
 
         # 若实体不在本批次中，尝试 upsert（可能是已有实体）
         if subj_name not in name_to_entity:

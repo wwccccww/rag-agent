@@ -5,7 +5,7 @@ import traceback
 from uuid import UUID
 
 from fastapi import APIRouter, HTTPException, Query
-from sqlalchemy import select
+from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
@@ -115,6 +115,13 @@ def delete_kg_entity(entity_id: UUID, user_id: str = Query("demo")) -> dict:
         e = db.get(KGEntity, entity_id)
         if not e or e.user_id != user_id:
             raise HTTPException(404, "entity not found")
+        # 先显式删除所有关联边，避免 ORM 尝试将 object_id 置空导致 NOT NULL 约束错误
+        db.execute(
+            delete(KGRelation).where(KGRelation.user_id == user_id).where(
+                (KGRelation.subject_id == entity_id) | (KGRelation.object_id == entity_id)
+            )
+        )
+        db.commit()
         db.delete(e)
         db.commit()
         return {"ok": True}
@@ -210,7 +217,7 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
             try:
                 from app.config import settings as _settings  # noqa: PLC0415
                 if _settings.kg_enabled and _settings.kg_triple_extract_enabled:
-                    from app.services.kg import extract_triples, save_triples  # noqa: PLC0415
+                    from app.services.kg import extract_triples, save_triples, get_self_entity, upsert_relation  # noqa: PLC0415
                     entities, relations = extract_triples(client, user_text)
                     # 若抽取不到三元组，也尽量用 subject 建立一个实体（避免完全丢失）
                     if not entities and isinstance(subject, str) and subject.strip():
@@ -225,6 +232,58 @@ def maybe_auto_memory(db: Session, client: OllamaClient, user_id: str, user_text
                             source_memory_id=None,
                             dedup_threshold=_settings.kg_entity_dedup_threshold,
                         )
+                        # 若文本中明确出现关系类型（同事/朋友/同学…），额外写入「我 ->(关系)-> subject」边
+                        rel_pred: str | None = None
+                        if re.search(r"\b同事\b|我同事|同事", user_text):
+                            rel_pred = "同事"
+                        elif re.search(r"\b朋友\b|我朋友|朋友", user_text):
+                            rel_pred = "朋友"
+                        elif re.search(r"\b同学\b|我同学|同学", user_text):
+                            rel_pred = "同学"
+                        elif re.search(r"\b室友\b|我室友|室友", user_text):
+                            rel_pred = "室友"
+                        elif re.search(r"\b导师\b|我导师|导师|老师", user_text):
+                            rel_pred = "导师"
+                        elif re.search(r"\b家人\b|爸|妈|哥哥|姐姐|弟弟|妹妹", user_text):
+                            rel_pred = "家人"
+
+                        if rel_pred and isinstance(subject, str) and subject.strip():
+                            try:
+                                from app.services.kg import upsert_entity  # noqa: PLC0415
+                                self_ent = get_self_entity(db, client, user_id)
+                                other_ent = upsert_entity(
+                                    db,
+                                    client,
+                                    user_id,
+                                    subject.strip()[:120],
+                                    "person",
+                                    dedup_threshold=_settings.kg_entity_dedup_threshold,
+                                )
+                                # 否定句冲突处理：如果用户说“不是同事/不是朋友…”，我们撤销该关系边
+                                # 规则：否定 = 删除边；肯定 = upsert 边。避免图谱出现“同事”和“不是同事”并存。
+                                neg_pat = rf"(不是|并非|不算|不属于|不是我)?\s*{re.escape(rel_pred)}"
+                                is_negated = bool(re.search(neg_pat, user_text))
+                                if is_negated:
+                                    db.execute(
+                                        delete(KGRelation)
+                                        .where(KGRelation.user_id == user_id)
+                                        .where(KGRelation.subject_id == self_ent.id)
+                                        .where(KGRelation.predicate == rel_pred)
+                                        .where(KGRelation.object_id == other_ent.id)
+                                    )
+                                    db.commit()
+                                else:
+                                    upsert_relation(
+                                        db,
+                                        user_id,
+                                        subject_id=self_ent.id,
+                                        predicate=rel_pred,
+                                        object_id=other_ent.id,
+                                        confidence=0.9,
+                                        source_memory_id=None,
+                                    )
+                            except Exception as _rel_err:
+                                logging.warning("[Memory] self->other relation save failed (non-fatal): %r", _rel_err)
                         kg_info = {
                             "entities": len(entities),
                             "relations": int(rel_n),

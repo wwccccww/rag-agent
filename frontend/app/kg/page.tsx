@@ -30,6 +30,10 @@ type KGRelation = {
   created_at: string;
 };
 
+function prettyName(name: string): string {
+  return name === "__self__" ? "我" : name;
+}
+
 const TYPE_COLORS: Record<string, string> = {
   person: "#6b8cff",
   project: "#d4a520",
@@ -110,7 +114,7 @@ function KgContent() {
     if (!f) return entities;
     return entities.filter(
       (e) =>
-        e.name.toLowerCase().includes(f) ||
+        prettyName(e.name).toLowerCase().includes(f) ||
         e.entity_type.toLowerCase().includes(f),
     );
   }, [entities, filter]);
@@ -120,8 +124,8 @@ function KgContent() {
     if (!f) return relations;
     return relations.filter(
       (r) =>
-        r.subject_name.toLowerCase().includes(f) ||
-        r.object_name.toLowerCase().includes(f) ||
+        prettyName(r.subject_name).toLowerCase().includes(f) ||
+        prettyName(r.object_name).toLowerCase().includes(f) ||
         r.predicate.toLowerCase().includes(f),
     );
   }, [relations, filter]);
@@ -291,7 +295,7 @@ function KgContent() {
               >
                 <span className="kg-dot" style={{ background: typeColor(e.entity_type) }} />
                 <div className="kg-entity-body">
-                  <div className="kg-entity-name">{e.name}</div>
+                  <div className="kg-entity-name">{prettyName(e.name)}</div>
                   <div className="kg-entity-meta">
                     <span className="badge">{e.entity_type}</span>
                     <span className="kg-date">{new Date(e.created_at).toLocaleString("zh-CN")}</span>
@@ -331,9 +335,9 @@ function KgContent() {
                   onClick={() => setHighlightId((x) => (x === r.id ? null : r.id))}
                 >
                   <div className="kg-triple">
-                    <span className="kg-triple-subj">{r.subject_name}</span>
+                    <span className="kg-triple-subj">{prettyName(r.subject_name)}</span>
                     <span className="kg-triple-pred">[{r.predicate}]</span>
-                    <span className="kg-triple-obj">{r.object_name}</span>
+                    <span className="kg-triple-obj">{prettyName(r.object_name)}</span>
                   </div>
                   <div className="kg-rel-meta">
                     <span className="badge">{(r.confidence * 100).toFixed(0)}%</span>
