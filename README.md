@@ -101,13 +101,41 @@ npm run test:e2e
 
 ## 线上错误率（Sentry，可选）
 
-本项目可选接入 Sentry 以持续跟踪**线上异常与错误率**（适合简历“工程正确性/可观测性”叙事）。当前实现为**后端优先**：
+本项目可选接入 Sentry 以持续跟踪**线上异常与错误率**（适合简历“工程正确性/可观测性”叙事）。当前实现包含：
 
-- **启用方式**：在 `backend/.env` 配置 `SENTRY_DSN`（非空即启用）
-- **关键配置项**（见 `backend/.env.example`）：
-  - `SENTRY_DSN`
-  - `SENTRY_ENVIRONMENT`（dev/staging/prod）
-  - `SENTRY_SAMPLE_RATE`（0-1）
+- **后端（FastAPI）**：在 `backend/.env` 配置 `SENTRY_DSN`（非空即启用），关键配置项见 `backend/.env.example`
+- **前端（Next.js）**：在 `frontend/.env.local` 配置 `NEXT_PUBLIC_SENTRY_DSN`（非空即启用），关键配置项见 `frontend/.env.example`
+
+### 前端常见问题：浏览器报错但 Sentry 看不到
+
+**现象：** 本地 Next.js 页面出现红屏（Unhandled Runtime Error），但 Sentry 控制台 `Issues` 里没有事件。
+
+**原因（高频）：** 仅安装了 `@sentry/nextjs` 并创建 `sentry.*.config.ts` 文件，但 **Next.js 的 Sentry 构建集成未启用**（`sentry.client.config.ts` 等文件不会被自动加载执行），因此不会 `Sentry.init()`，Network 也看不到发往 `*.ingest.sentry.io` 的请求。
+
+**解决方案（推荐）：** 使用官方 wizard 自动补齐 Next.js 集成配置（会更新 `next.config.mjs`、启用 instrumentation hook 等）。
+
+**测试步骤：**
+1. 在 `frontend` 目录执行：
+
+```powershell
+cd d:\1study\study\python\rag-agent\frontend
+npx @sentry/wizard@latest -i nextjs
+```
+
+2. 配置 `frontend/.env.local`（关键项：`NEXT_PUBLIC_SENTRY_DSN`，可选设置 `NEXT_PUBLIC_SENTRY_ENVIRONMENT=dev`），然后重启前端：
+
+```powershell
+npm run dev
+```
+
+3. 触发一个未捕获前端异常（示例：临时 `throw new Error("test")`），并在浏览器 DevTools → Network 里搜索 `envelope` / `ingest`，应能看到请求（常见状态码 200/202）。
+4. 在 Sentry 控制台进入**对应前端项目**的 `Issues`，放宽时间范围（如 30min/24h），确认环境筛选包含 `dev`，即可看到 `Error: test` 等 issue。
+
+**预期输出：**
+- Network 中出现发往 `*.ingest*.sentry.io`（或通过 Next.js 反代的）`/envelope` 请求
+- Sentry `Issues` 中出现新的 `Unhandled` 异常
+
+> 备注：wizard 可能提示 `sentry.client.config.ts` 在 Turbopack 场景的未来弃用（建议迁移到 `instrumentation-client.ts`）。该提示不影响当前 dev 上报验证，后续可按官方建议升级以消除 warning。
 
 **测试步骤：**
 1. 配置 `SENTRY_DSN` 并启动后端
