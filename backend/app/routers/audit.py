@@ -32,6 +32,7 @@ def list_tool_audits(
     user_id: str = Query("demo"),
     session_id: UUID | None = Query(default=None),
     request_id: str | None = Query(default=None, max_length=64),
+    mode: str | None = Query(default=None, max_length=32),
     worker: str | None = Query(default=None, max_length=32),
     tool: str | None = Query(default=None, max_length=64),
     status: str | None = Query(default=None, max_length=16),
@@ -44,6 +45,8 @@ def list_tool_audits(
             q = q.where(ToolAuditLog.session_id == session_id)
         if request_id:
             q = q.where(ToolAuditLog.request_id == request_id)
+        if mode:
+            q = q.where(ToolAuditLog.mode == mode)
         if worker:
             q = q.where(ToolAuditLog.worker == worker)
         if tool:

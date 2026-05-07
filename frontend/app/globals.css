@@ -1882,6 +1882,12 @@ a:hover { text-decoration: underline; }
 }
 
 /* ── Audit page ── */
+.audit-layout {
+  max-width: 1200px; /* 或 1400px / 90vw */
+  margin: 0 auto;
+  padding: 40px 20px;
+}
+
 .audit-toolbar {
   display: flex;
   flex-wrap: wrap;
@@ -1895,13 +1901,14 @@ a:hover { text-decoration: underline; }
 .audit-table-wrap {
   border: 1px solid var(--border);
   border-radius: 12px;
-  overflow: hidden;
+  overflow: auto;
   background: var(--panel);
 }
 .audit-table {
   width: 100%;
   border-collapse: collapse;
   font-size: 12px;
+  min-width: 1280px;
 }
 .audit-table th,
 .audit-table td {
