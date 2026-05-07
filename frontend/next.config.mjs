@@ -12,8 +12,26 @@ export default withSentryConfig(nextConfig, {
 
   project: "javascript-nextjs",
 
+  // Auth token for uploading sourcemaps/releases in CI.
+  // If not provided (e.g. PRs from forks), we disable build-time Sentry upload to avoid failing the build.
+  authToken: process.env.SENTRY_AUTH_TOKEN,
+
   // Only print logs for uploading source maps in CI
   silent: !process.env.CI,
+
+  // Avoid failing builds when token is missing or Sentry is unreachable.
+  errorHandler: (error) => {
+    console.warn("Sentry build error occurred:", error?.message || error);
+  },
+
+  sourcemaps: {
+    disable: !process.env.SENTRY_AUTH_TOKEN,
+  },
+
+  release: {
+    create: !!process.env.SENTRY_AUTH_TOKEN,
+    finalize: !!process.env.SENTRY_AUTH_TOKEN,
+  },
 
   // For all available options, see:
   // https://docs.sentry.io/platforms/javascript/guides/nextjs/manual-setup/
