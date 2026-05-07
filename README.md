@@ -64,7 +64,7 @@ npm run dev
 - **集成测试（Integration）**：`FastAPI TestClient` + `unittest.mock` 模拟 DB（不依赖真实 PostgreSQL），例如 `GET /v1/audit/tools`，见 `backend/tests/test_integration_audit.py`
 - **覆盖率阈值（Coverage gate）**：`pytest` 默认带 `--cov=app --cov-fail-under=34`（见 `backend/pytest.ini`），低于阈值 CI 失败
 - **构建验证（Build）**：前端 Next.js `build`（用于 CI 阻断）
-- **端到端测试（E2E，策略A）**：Playwright 冒烟用例（拦截 `/api/*` 返回固定 SSE/JSON，不依赖 DB/Ollama），覆盖 RAG / Multi-Agent / Audit 页面
+- **端到端测试（E2E，策略A）**：Playwright 回归用例（拦截 `/api/*` 返回固定 SSE/JSON，不依赖 DB/Ollama），覆盖 RAG / Agent / Plan / Multi-Agent / Audit / KG 页面
 - **CI 阻断**：GitHub Actions（push / PR）自动跑后端 `pytest`（含覆盖率）与前端 `npm run build`
 
 **测试步骤：**
@@ -96,7 +96,7 @@ npm run test:e2e
 **预期输出：**
 - `pytest` 通过，末尾显示 `Required test coverage of 34% reached`（或更高总覆盖率）
 - `npm run build` 成功完成（无 TypeScript/构建错误）
-- `npm run test:e2e` 通过（3 passed）
+- `npm run test:e2e` 通过（6 passed）
 
 ## 主要 API
 

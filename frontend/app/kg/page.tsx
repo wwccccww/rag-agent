@@ -245,7 +245,7 @@ function KgContent() {
               const p = svgLayout.pos.get(id);
               const ent = entityMap.get(id);
               if (!p) return null;
-              const label = ent?.name ?? id.slice(0, 8);
+              const label = prettyName(ent?.name ?? id.slice(0, 8));
               const short = label.length > 8 ? `${label.slice(0, 8)}…` : label;
               const col = typeColor(ent?.entity_type ?? "other");
               const hi = highlightId === id;
