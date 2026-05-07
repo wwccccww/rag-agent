@@ -200,8 +200,15 @@ def ensure_indexes() -> None:
     try:
         with engine.connect() as conn:
             conn.execute(text(
+                "ALTER TABLE tool_audit_logs ADD COLUMN IF NOT EXISTS worker VARCHAR(32) DEFAULT NULL"
+            ))
+            conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS idx_tool_audit_user_session "
                 "ON tool_audit_logs (user_id, session_id)"
+            ))
+            conn.execute(text(
+                "CREATE INDEX IF NOT EXISTS idx_tool_audit_worker "
+                "ON tool_audit_logs (worker)"
             ))
             conn.execute(text(
                 "CREATE INDEX IF NOT EXISTS idx_tool_audit_tool_ts "

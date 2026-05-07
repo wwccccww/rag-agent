@@ -146,6 +146,9 @@ class Settings(BaseSettings):
     tool_policy_level: str = "medium"
     # medium 下是否允许 web_search（联网搜索）。默认关闭，避免网络不稳定/审计风险。
     web_search_enabled: bool = False
+    # Multi-Agent（档2）：retriever worker 是否允许 web_search（联网搜索）。
+    # 注意：仍受全局 web_search_enabled 与 tool_policy_level 约束；该开关仅用于“在 retriever allowlist 中放行”。
+    multi_retriever_web_search_enabled: bool = False
     # 工具调用最大次数（跨多轮 tool_calls 累计）；超过会被拒绝并审计。
     tool_max_calls: int = 12
     # 工具结果预览存入审计日志的最大字符数

@@ -23,6 +23,9 @@ type Source = {
   section_heading?: string | null;
   score?: number;
   snippet?: string;
+  kind?: "kb" | "web";
+  title?: string | null;
+  url?: string | null;
 };
 
 type AgentStep = {
@@ -36,6 +39,7 @@ type AgentStep = {
   source_count?: number;
   elapsed_ms?: number;
   reasoning?: string;
+  worker?: string;
 };
 
 type RagHop = {
@@ -56,7 +60,7 @@ type PlanStep = {
   elapsed_ms?: number;
 };
 
-type ChatMode = "rag" | "agent" | "plan";
+type ChatMode = "rag" | "agent" | "plan" | "multi";
 
 type MsgStats = { tokens: number; tok_per_sec: number };
 
@@ -78,6 +82,9 @@ type ChatMsg = {
   /** Plan & Execute 模式专属 */
   planGoal?: string;
   planSteps?: PlanStep[];
+  /** Multi-Agent 档2：计划与 worker 结果（最小展示） */
+  maPlan?: unknown;
+  maWorkers?: { worker: string; ok: boolean; text: string }[];
 };
 
 type Session = { id: string; label: string };
@@ -523,6 +530,7 @@ export default function HomePage() {
       chatMode,
       agentSteps: chatMode !== "rag" ? [] : undefined,
       planSteps: chatMode === "plan" ? [] : undefined,
+      maWorkers: chatMode === "multi" ? [] : undefined,
     };
     setMessages((m) => [...m, userMsg, assistantMsg]);
 
@@ -539,6 +547,7 @@ export default function HomePage() {
     const endpoint =
       chatMode === "agent" ? "/api/chat/agent/stream" :
       chatMode === "plan"  ? "/api/chat/plan_execute/stream" :
+      chatMode === "multi" ? "/api/chat/multi_agent/stream" :
       "/api/chat/stream";
     const controller = new AbortController();
     abortRef.current = controller;
@@ -572,6 +581,26 @@ export default function HomePage() {
     const capturedUserId = userId;
     let capturedSessionId = currentSession;
     await consumeSse(res, (event, data) => {
+      // ── Multi-Agent 档2 专属事件 ─────────────────────────────────────
+      if (event === "ma_plan" && data && typeof data === "object") {
+        const d = data as { plan?: unknown };
+        setMessages((m) =>
+          m.map((msg) => (msg.id === aId ? { ...msg, maPlan: d.plan ?? null } : msg))
+        );
+      }
+      if (event === "ma_worker_result" && data && typeof data === "object") {
+        const d = data as { worker?: string; ok?: boolean; text?: string };
+        const w = typeof d.worker === "string" ? d.worker : "worker";
+        setMessages((m) =>
+          m.map((msg) => {
+            if (msg.id !== aId) return msg;
+            const cur = Array.isArray(msg.maWorkers) ? msg.maWorkers : [];
+            const next = cur.filter((x) => x.worker !== w);
+            next.push({ worker: w, ok: !!d.ok, text: String(d.text ?? "") });
+            return { ...msg, maWorkers: next };
+          })
+        );
+      }
       // ── Plan & Execute 专属事件 ──────────────────────────────────────
       if (event === "plan" && data && typeof data === "object") {
         const d = data as { goal?: string; steps?: PlanStep[] };
@@ -924,6 +953,13 @@ export default function HomePage() {
             >
               🗂 规划
             </button>
+            <button
+              className={`mode-toggle-btn${chatMode === "multi" ? " active" : ""}`}
+              onClick={() => setChatMode("multi")}
+              title="Multi-Agent（档2）：Supervisor 调度多个 worker 并行协作，最后汇总"
+            >
+              🧩 多智能体
+            </button>
           </div>
           {currentSession && <span className="badge blue">pgvector</span>}
           <span className="badge green">Ollama · qwen2.5:7b</span>
@@ -1109,18 +1145,19 @@ function MarkdownContent({ content, sources, onCiteClick }: {
   sources?: Source[];
   onCiteClick?: (idx: number) => void;
 }) {
-  // 把 [S1] [S2] 替换为可点击徽章（先占位，再在 text 节点里处理）
+  // 把 [S1] / [W1] 替换为可点击徽章（先占位，再在 text 节点里处理）
   const renderText = (text: string) => {
-    const parts = text.split(/(\[S\d+\])/g);
+    const parts = text.split(/(\[S\d+\]|\[W\d+\])/g);
     return parts.map((part, i) => {
-      const m = part.match(/^\[S(\d+)\]$/);
+      const m = part.match(/^\[(S|W)(\d+)\]$/);
       if (m) {
-        const idx = parseInt(m[1]) - 1;
+        const kind = m[1];
+        const idx = parseInt(m[2]) - 1;
         const src = sources?.[idx];
         return (
           <button
             key={i}
-            className="cite-badge"
+            className={`cite-badge${kind === "W" ? " cite-badge-web" : ""}`}
             title={src ? `${src.source ?? ""}${src.page != null ? ` p.${src.page}` : ""}` : part}
             onClick={() => onCiteClick?.(idx)}
           >
@@ -1294,6 +1331,23 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
           ))}
         </div>
       )}
+
+      {/* ── Multi-Agent 档2：worker 结果面板（最小版） ── */}
+      {msg.role === "assistant" && msg.chatMode === "multi" && Array.isArray(msg.maWorkers) && msg.maWorkers.length > 0 && (
+        <div className="plan-panel">
+          <div className="plan-panel-header">
+            <span className="plan-panel-icon">🧩</span>
+            <span className="plan-panel-goal">多智能体执行结果</span>
+          </div>
+          {msg.maWorkers.map((w) => (
+            <div key={w.worker} className={`plan-step-row ${w.ok ? "done" : "error"}`}>
+              <span className="plan-step-num">{w.worker}</span>
+              <span className="plan-step-desc">{w.text.slice(0, 140)}{w.text.length > 140 ? "…" : ""}</span>
+              <span className={`plan-step-dot ${w.ok ? "done" : "error"}`} />
+            </div>
+          ))}
+        </div>
+      )}
       {/* ── Agent / Plan 工具调用步骤面板 ── */}
       {msg.role === "assistant" && msg.chatMode !== "rag" && (msg.agentSteps?.length ?? 0) > 0 && (
         <div className="agent-steps-panel">
@@ -1364,14 +1418,25 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
       {msg.role === "assistant" && hasSources && (
         <div className="sources-block">
           <button className="sources-toggle" onClick={() => setSourcesOpen((o) => !o)}>
-            📎 {msg.sources!.length} 个知识片段 {sourcesOpen ? "▲" : "▼"}
+            {(() => {
+              const kb = (msg.sources ?? []).filter((s) => (s.kind ?? "kb") === "kb").length;
+              const web = (msg.sources ?? []).filter((s) => s.kind === "web").length;
+              const parts: string[] = [];
+              if (kb) parts.push(`${kb} 个知识库片段`);
+              if (web) parts.push(`${web} 个网络来源`);
+              const label = parts.length > 0 ? parts.join(" + ") : `${msg.sources!.length} 个来源`;
+              return <>📎 {label} {sourcesOpen ? "▲" : "▼"}</>;
+            })()}
           </button>
           {sourcesOpen && (
             <div className="sources-list">
-              {msg.sources!.map((s, i) => (
+              {msg.sources!.map((s, i) => {
+                const isWeb = s.kind === "web";
+                const tag = isWeb ? `W${i + 1}` : `S${i + 1}`;
+                return (
                 <div key={s.chunk_id} className={`source-card${highlightIdx === i ? " highlighted" : ""}`}>
                   <div className="source-card-header">
-                    <span className="source-card-file">[S{i + 1}] {s.source ?? "未知来源"}</span>
+                    <span className="source-card-file">[{tag}] {s.source ?? (isWeb ? "网络来源" : "未知来源")}</span>
                     {s.page != null && <span className="source-card-meta">第 {s.page} 页</span>}
                     {s.score != null && (
                     <span className="source-card-meta" title="混合检索时取向量与文本匹配分的较高值">
@@ -1384,7 +1449,8 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
                   )}
                   {s.snippet && <div className="source-card-snippet">{s.snippet}</div>}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>

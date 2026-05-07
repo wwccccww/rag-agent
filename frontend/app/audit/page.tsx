@@ -9,6 +9,7 @@ type ToolAuditItem = {
   session_id: string | null;
   mode: string;
   request_id: string | null;
+  worker?: string | null;
   tool: string;
   status: string;
   elapsed_ms: number | null;
@@ -31,6 +32,7 @@ export default function AuditPage() {
   const [tool, setTool] = useState("");
   const [status, setStatus] = useState("");
   const [requestId, setRequestId] = useState("");
+  const [worker, setWorker] = useState("");
   const [limit, setLimit] = useState(100);
   const [items, setItems] = useState<ToolAuditItem[]>([]);
   const [loading, setLoading] = useState(false);
@@ -43,9 +45,10 @@ export default function AuditPage() {
     if (tool.trim()) p.set("tool", tool.trim());
     if (status.trim()) p.set("status", status.trim());
     if (requestId.trim()) p.set("request_id", requestId.trim());
+    if (worker.trim()) p.set("worker", worker.trim());
     p.set("limit", String(limit));
     return p.toString();
-  }, [userId, tool, status, requestId, limit]);
+  }, [userId, tool, status, requestId, worker, limit]);
 
   const load = async () => {
     setLoading(true);
@@ -87,6 +90,7 @@ export default function AuditPage() {
         <input className="text-input" value={tool} onChange={(e) => setTool(e.target.value)} placeholder="tool（可选）" />
         <input className="text-input" value={status} onChange={(e) => setStatus(e.target.value)} placeholder="status（ok/denied/error）" />
         <input className="text-input" value={requestId} onChange={(e) => setRequestId(e.target.value)} placeholder="request_id（可选）" />
+        <input className="text-input" value={worker} onChange={(e) => setWorker(e.target.value)} placeholder="worker（retriever/solver/critic…）" />
         <input
           className="text-input"
           value={String(limit)}
@@ -111,6 +115,7 @@ export default function AuditPage() {
               <th>耗时</th>
               <th>sources</th>
               <th>request_id</th>
+              <th>worker</th>
               <th>展开</th>
             </tr>
           </thead>
@@ -127,6 +132,7 @@ export default function AuditPage() {
                     <td>{it.elapsed_ms == null ? "-" : `${Math.round(it.elapsed_ms)}ms`}</td>
                     <td>{it.sources_count}</td>
                     <td className="audit-mono">{it.request_id ?? "-"}</td>
+                    <td className="audit-mono">{it.worker ?? "-"}</td>
                     <td>
                       <button className="btn" type="button" onClick={() => setExpanded((cur) => (cur === it.id ? null : it.id))}>
                         {isOpen ? "收起" : "详情"}
@@ -135,7 +141,7 @@ export default function AuditPage() {
                   </tr>
                   {isOpen && (
                     <tr key={`${it.id}-detail`} className="audit-detail-row">
-                      <td colSpan={8}>
+                      <td colSpan={9}>
                         <div className="audit-detail-grid">
                           <div>
                             <div className="field-label">tool_args</div>

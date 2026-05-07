@@ -646,6 +646,17 @@ a:hover { text-decoration: underline; }
 }
 .cite-badge:hover { background: var(--accent); color: #0d1117; }
 
+/* 网络来源引用徽章 [W1]… */
+.cite-badge.cite-badge-web {
+  background: rgba(59, 130, 246, 0.14);
+  border-color: rgba(59, 130, 246, 0.55);
+  color: rgba(191, 219, 254, 0.95);
+}
+.cite-badge.cite-badge-web:hover {
+  background: rgba(59, 130, 246, 0.35);
+  color: #e6f0ff;
+}
+
 /* 源片段高亮闪烁 */
 .source-card.highlighted {
   border-color: var(--accent) !important;

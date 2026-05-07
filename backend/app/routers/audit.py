@@ -17,6 +17,7 @@ class ToolAuditItem(BaseModel):
     session_id: UUID | None
     mode: str
     request_id: str | None
+    worker: str | None = None
     tool: str
     status: str
     elapsed_ms: float | None
@@ -31,6 +32,7 @@ def list_tool_audits(
     user_id: str = Query("demo"),
     session_id: UUID | None = Query(default=None),
     request_id: str | None = Query(default=None, max_length=64),
+    worker: str | None = Query(default=None, max_length=32),
     tool: str | None = Query(default=None, max_length=64),
     status: str | None = Query(default=None, max_length=16),
     limit: int = Query(100, ge=1, le=500),
@@ -42,6 +44,8 @@ def list_tool_audits(
             q = q.where(ToolAuditLog.session_id == session_id)
         if request_id:
             q = q.where(ToolAuditLog.request_id == request_id)
+        if worker:
+            q = q.where(ToolAuditLog.worker == worker)
         if tool:
             q = q.where(ToolAuditLog.tool == tool)
         if status:
@@ -56,6 +60,7 @@ def list_tool_audits(
                 session_id=r.session_id,
                 mode=r.mode,
                 request_id=r.request_id,
+                worker=r.worker,
                 tool=r.tool,
                 status=r.status,
                 elapsed_ms=r.elapsed_ms,

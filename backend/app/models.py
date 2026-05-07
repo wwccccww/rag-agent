@@ -184,6 +184,9 @@ class ToolAuditLog(Base):
     mode: Mapped[str] = mapped_column(String(32), nullable=False, default="agent", index=True)
     request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
 
+    # 多智能体：执行主体（如 supervisor/retriever/solver/critic/synth）。单智能体可为空。
+    worker: Mapped[str | None] = mapped_column(String(32), nullable=True, index=True)
+
     tool: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
     tool_args: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     args_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)

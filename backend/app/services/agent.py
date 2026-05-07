@@ -47,6 +47,56 @@ from app.telemetry import telemetry
 from app.services.tool_audit import ToolAuditSpan, record_tool_audit
 from app.services.tool_policy import get_tool_policy
 
+# ── Web Search 结果结构化（用于前端区分来源）────────────────────────────────
+def _extract_web_sources(text: str) -> list[dict[str, Any]]:
+    """
+    从 _web_search 返回的纯文本中提取结构化来源，便于前端区分「网络」与「知识库」。
+    约定格式（见 _web_search）：每条以 [Wk] 开头，包含「来源: <url>」。
+    """
+    raw = (text or "").strip()
+    if not raw:
+        return []
+    blocks: list[str] = []
+    cur: list[str] = []
+    for line in raw.splitlines():
+        if line.startswith("[W") and "]" in line[:6] and cur:
+            blocks.append("\n".join(cur).strip())
+            cur = [line]
+        else:
+            cur.append(line)
+    if cur:
+        blocks.append("\n".join(cur).strip())
+
+    out: list[dict[str, Any]] = []
+    for b in blocks:
+        lines = [ln.strip() for ln in b.splitlines() if ln.strip()]
+        if not lines:
+            continue
+        title = lines[0]
+        url = ""
+        content_lines: list[str] = []
+        for ln in lines[1:]:
+            if ln.startswith("来源:"):
+                url = ln.replace("来源:", "", 1).strip()
+            else:
+                content_lines.append(ln)
+        snippet = "\n".join(content_lines).strip()
+        chunk_id = url or title
+        out.append(
+            {
+                "kind": "web",
+                "chunk_id": f"web:{chunk_id}",
+                "source": url or "web_search",
+                "section_heading": None,
+                "page": None,
+                "score": None,
+                "snippet": snippet[:4000] if snippet else "",
+                "title": title,
+                "url": url,
+            }
+        )
+    return out
+
 # ── Web Search（多后端 + 优雅降级）──────────────────────────────────────────
 def _web_search(query: str, max_results: int = 5) -> str:
     """
@@ -597,25 +647,29 @@ def _execute_tool(
     session_id: UUID | None = None,
     mode: str = "agent",
     request_id: str | None = None,
+    worker: str | None = None,
+    allowed_tools_override: set[str] | frozenset[str] | None = None,
 ) -> tuple[str, list[dict]]:
     """执行单个工具，返回 (文本结果, sources列表)。"""
     policy = get_tool_policy()
-    if tool_name not in policy.allowed_tools:
+    allowed = frozenset(allowed_tools_override) if allowed_tools_override is not None else policy.allowed_tools
+    if tool_name not in allowed:
         record_tool_audit(
             db,
             user_id=user_id,
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="denied",
-            error=f"tool denied by policy level={policy.level}",
+            error=f"tool denied (policy={policy.level}, override={'yes' if allowed_tools_override is not None else 'no'})",
             elapsed_ms=0.0,
             result_preview=None,
             sources_count=0,
         )
-        return f"⚠️ 工具已被策略禁止（level={policy.level}）：{tool_name}", []
+        return f"⚠️ 工具已被策略禁止：{tool_name}", []
 
     span = ToolAuditSpan()
     if tool_name == "search_knowledge_base":
@@ -627,6 +681,7 @@ def _execute_tool(
                 session_id=session_id,
                 mode=mode,
                 request_id=request_id,
+                worker=worker,
                 tool=tool_name,
                 tool_args=tool_args,
                 status="error",
@@ -644,6 +699,7 @@ def _execute_tool(
                 session_id=session_id,
                 mode=mode,
                 request_id=request_id,
+                worker=worker,
                 tool=tool_name,
                 tool_args=tool_args,
                 status="ok",
@@ -664,6 +720,7 @@ def _execute_tool(
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
@@ -671,6 +728,10 @@ def _execute_tool(
             result_preview=out,
             sources_count=len(results),
         )
+        # 为前端展示补充来源类型：知识库片段
+        for r in results:
+            if isinstance(r, dict) and "kind" not in r:
+                r["kind"] = "kb"
         return out, results
 
     if tool_name == "recall_user_memory":
@@ -683,6 +744,7 @@ def _execute_tool(
                 session_id=session_id,
                 mode=mode,
                 request_id=request_id,
+                worker=worker,
                 tool=tool_name,
                 tool_args=tool_args,
                 status="ok",
@@ -698,6 +760,7 @@ def _execute_tool(
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
@@ -734,6 +797,7 @@ def _execute_tool(
                 session_id=session_id,
                 mode=mode,
                 request_id=request_id,
+                worker=worker,
                 tool=tool_name,
                 tool_args=tool_args,
                 status="error",
@@ -746,20 +810,22 @@ def _execute_tool(
         raw = _web_search(query)
         # 扫描搜索结果中的间接注入
         safe = sanitize_external_content(raw, source_label=f"web_search:{query[:40]}")
+        web_sources = _extract_web_sources(safe)
         record_tool_audit(
             db,
             user_id=user_id,
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
             elapsed_ms=span.elapsed_ms(),
             result_preview=safe,
-            sources_count=0,
+            sources_count=len(web_sources),
         )
-        return safe, []
+        return safe, web_sources
 
     if tool_name == "python_repl":
         code = str(tool_args.get("code", "")).strip()
@@ -770,6 +836,7 @@ def _execute_tool(
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
@@ -784,20 +851,34 @@ def _execute_tool(
         raw = _fetch_url(url)
         # 扫描网页正文中的间接注入
         safe = sanitize_external_content(raw, source_label=f"fetch_url:{url[:60]}")
+        web_sources = [
+            {
+                "kind": "web",
+                "chunk_id": f"web:{url}" if url else "web:fetch_url",
+                "source": url or "fetch_url",
+                "section_heading": None,
+                "page": None,
+                "score": None,
+                "snippet": (safe or "")[:4000],
+                "title": None,
+                "url": url,
+            }
+        ]
         record_tool_audit(
             db,
             user_id=user_id,
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
             elapsed_ms=span.elapsed_ms(),
             result_preview=safe,
-            sources_count=0,
+            sources_count=len(web_sources),
         )
-        return safe, []
+        return safe, web_sources
 
     if tool_name == "calculate":
         expression = str(tool_args.get("expression", "")).strip()
@@ -808,6 +889,7 @@ def _execute_tool(
             session_id=session_id,
             mode=mode,
             request_id=request_id,
+            worker=worker,
             tool=tool_name,
             tool_args=tool_args,
             status="ok",
@@ -823,6 +905,7 @@ def _execute_tool(
         session_id=session_id,
         mode=mode,
         request_id=request_id,
+        worker=worker,
         tool=tool_name,
         tool_args=tool_args,
         status="error",
@@ -847,6 +930,9 @@ def run_agent(
     session_id: UUID | None = None,
     request_id: str | None = None,
     mode: str = "agent",
+    worker: str | None = None,
+    allowed_tools_override: set[str] | frozenset[str] | None = None,
+    tool_max_calls_override: int | None = None,
 ) -> Generator[dict[str, Any], None, None]:
     """
     Agent 主循环 Generator，集成三种推理策略：
@@ -958,6 +1044,7 @@ def run_agent(
 
     # ── 5. ReAct 主循环 ───────────────────────────────────────────────────────
     tool_calls_total = 0
+    max_calls = int(tool_max_calls_override) if isinstance(tool_max_calls_override, int) and tool_max_calls_override > 0 else int(getattr(settings, "tool_max_calls", 12) or 12)
     for iteration in range(MAX_ITERATIONS):
         # ── LLM 决策：选择工具或直接回答 ─────────────────────────────────
         try:
@@ -1004,7 +1091,7 @@ def run_agent(
             t0 = time.perf_counter()
             try:
                 tool_calls_total += 1
-                if tool_calls_total > int(getattr(settings, "tool_max_calls", 12) or 12):
+                if tool_calls_total > max_calls:
                     result_text, sources = "⚠️ 工具调用次数已超过上限，已停止继续调用。", []
                     record_tool_audit(
                         db,
@@ -1012,6 +1099,7 @@ def run_agent(
                         session_id=session_id,
                         mode=mode,
                         request_id=request_id,
+                        worker=worker,
                         tool=tool_name,
                         tool_args=tool_args,
                         status="denied",
@@ -1033,6 +1121,8 @@ def run_agent(
                         session_id=session_id,
                         mode=mode,
                         request_id=request_id,
+                        worker=worker,
+                        allowed_tools_override=allowed_tools_override,
                     )
             except Exception as e:
                 result_text = f"工具执行出错：{e}"
