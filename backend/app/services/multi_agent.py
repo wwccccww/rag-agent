@@ -49,6 +49,21 @@ class WorkerResult:
     steps_trace: list[dict[str, Any]]
 
 
+def get_retriever_allowed_tools() -> set[str]:
+    """Multi-Agent（档2）retriever worker 的工具白名单（可配置放行 web_search）。"""
+    allowed = {"search_knowledge_base", "recall_user_memory", "get_current_datetime"}
+    if bool(getattr(settings, "multi_retriever_web_search_enabled", False)) and bool(
+        getattr(settings, "web_search_enabled", False)
+    ):
+        allowed.add("web_search")
+    return allowed
+
+
+def get_solver_allowed_tools() -> set[str]:
+    """Multi-Agent（档2）solver worker 的工具白名单（禁止知识库/联网）。"""
+    return {"calculate", "python_repl", "get_current_datetime"}
+
+
 def _parse_plan(raw: str) -> dict[str, Any]:
     text = raw.strip()
     if text.startswith("```"):
@@ -162,12 +177,7 @@ def run_multi_agent(
         _client2 = OllamaClient()
         try:
             if worker == "retriever":
-                allowed = {"search_knowledge_base", "recall_user_memory", "get_current_datetime"}
-                # 可选：允许 retriever 联网搜索（同时仍受全局 WEB_SEARCH_ENABLED + TOOL_POLICY_LEVEL 约束）
-                if bool(getattr(settings, "multi_retriever_web_search_enabled", False)) and bool(
-                    getattr(settings, "web_search_enabled", False)
-                ):
-                    allowed.add("web_search")
+                allowed = get_retriever_allowed_tools()
                 return _run_worker_agent(
                     db=_db2,
                     ollama=_client2,
@@ -182,7 +192,7 @@ def run_multi_agent(
                     doc_types=doc_types,
                 )
             if worker == "solver":
-                allowed = {"calculate", "python_repl", "get_current_datetime"}
+                allowed = get_solver_allowed_tools()
                 return _run_worker_agent(
                     db=_db2,
                     ollama=_client2,

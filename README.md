@@ -55,6 +55,36 @@ npm run dev
 
 打开 `http://localhost:3000`。
 
+## 测试（分层验证体系）
+
+本项目当前提供的验证层级：
+
+- **单元测试（Unit）**：围栏分块、父子分块、引用校验、工具策略、Multi-Agent worker 白名单、网络来源解析等
+- **构建验证（Build）**：前端 Next.js `build`（用于 CI 阻断）
+- **CI 阻断**：GitHub Actions（push / PR）自动跑后端测试与前端 build
+
+**测试步骤：**
+1. 后端安装测试依赖并运行单测
+
+```powershell
+cd d:\1study\study\python\rag-agent\backend
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements-dev.txt
+pytest -q
+```
+
+2. 前端构建检查（CI 同款）
+
+```powershell
+cd d:\1study\study\python\rag-agent\frontend
+npm install
+npm run build
+```
+
+**预期输出：**
+- `pytest -q` 通过（显示 `passed`）
+- `npm run build` 成功完成（无 TypeScript/构建错误）
+
 ## 主要 API
 
 
