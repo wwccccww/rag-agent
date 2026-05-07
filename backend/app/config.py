@@ -166,5 +166,13 @@ class Settings(BaseSettings):
     # 图谱实体向量检索相关性阈值（余弦距离）：超过此值的实体不作为展开种子
     kg_entity_distance_threshold: float = 0.5
 
+    # ── Sentry（线上错误率/异常聚合）──────────────────────────────────────────
+    # DSN 为空则不启用 Sentry
+    sentry_dsn: str | None = None
+    # 环境：dev/staging/prod（默认 dev）
+    sentry_environment: str = "dev"
+    # 采样率：错误事件采样（0-1，默认 1.0）；性能追踪可后续再加
+    sentry_sample_rate: float = 1.0
+
 
 settings = Settings()

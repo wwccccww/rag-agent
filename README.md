@@ -65,6 +65,7 @@ npm run dev
 - **覆盖率阈值（Coverage gate）**：`pytest` 默认带 `--cov=app --cov-fail-under=34`（见 `backend/pytest.ini`），低于阈值 CI 失败
 - **构建验证（Build）**：前端 Next.js `build`（用于 CI 阻断）
 - **端到端测试（E2E，策略A）**：Playwright 回归用例（拦截 `/api/*` 返回固定 SSE/JSON，不依赖 DB/Ollama），覆盖 RAG / Agent / Plan / Multi-Agent / Audit / KG 页面
+- **线上错误率（Sentry）**：可选接入 Sentry 进行异常聚合与错误率监控（后端优先）
 - **CI 阻断**：GitHub Actions（push / PR）自动跑后端 `pytest`（含覆盖率）与前端 `npm run build`
 
 **测试步骤：**
@@ -97,6 +98,24 @@ npm run test:e2e
 - `pytest` 通过，末尾显示 `Required test coverage of 34% reached`（或更高总覆盖率）
 - `npm run build` 成功完成（无 TypeScript/构建错误）
 - `npm run test:e2e` 通过（6 passed）
+
+## 线上错误率（Sentry，可选）
+
+本项目可选接入 Sentry 以持续跟踪**线上异常与错误率**（适合简历“工程正确性/可观测性”叙事）。当前实现为**后端优先**：
+
+- **启用方式**：在 `backend/.env` 配置 `SENTRY_DSN`（非空即启用）
+- **关键配置项**（见 `backend/.env.example`）：
+  - `SENTRY_DSN`
+  - `SENTRY_ENVIRONMENT`（dev/staging/prod）
+  - `SENTRY_SAMPLE_RATE`（0-1）
+
+**测试步骤：**
+1. 配置 `SENTRY_DSN` 并启动后端
+2. 访问一个会触发 500 的路径（或临时制造异常）
+3. 在 Sentry 项目中查看事件与错误率趋势
+
+**预期输出：**
+- Sentry “Issues / Events” 出现新异常事件，并可按环境、release 聚合统计错误率
 
 ## 主要 API
 

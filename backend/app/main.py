@@ -8,8 +8,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.database import Base, engine, init_db
 from app.routers import audit, chat, docs, health, ingest, memory, metrics, multi_agent, sessions, stats
 from app.services.reranker import warmup as warmup_reranker
+from app.services.sentry import init_sentry
 
 logging.basicConfig(level=logging.INFO)
+
+# 可选：启用 Sentry 错误率/异常聚合（未配置 DSN 时自动跳过）
+init_sentry()
 
 
 @asynccontextmanager
