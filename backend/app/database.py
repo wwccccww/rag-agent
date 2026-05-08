@@ -223,6 +223,26 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning("[DB] tool_audit_logs indexes failed: %s", e)
 
+    # 用户 — 知识库分区授权表索引 + 默认 demo 授权（幂等）
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_user_kb_collections_user_id "
+                    "ON user_kb_collections (user_id)"
+                )
+            )
+            conn.execute(
+                text(
+                    "INSERT INTO user_kb_collections (user_id, kb_collection) "
+                    "VALUES ('demo', 'default') ON CONFLICT (user_id, kb_collection) DO NOTHING"
+                )
+            )
+            conn.commit()
+        logging.info("[DB] user_kb_collections index + demo seed ready")
+    except Exception as e:
+        logging.warning("[DB] user_kb_collections migrate failed: %s", e)
+
 
 def init_db() -> None:
     """建表 + 启用扩展 + 创建索引，失败只记日志不崩溃"""

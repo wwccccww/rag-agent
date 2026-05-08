@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 import uuid
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
@@ -23,6 +23,7 @@ from app.telemetry import telemetry
 from app.services.agent import run_agent
 from app.services.plan_execute import run_plan_execute
 from app.services.security import sanitize_external_content, sanitize_user_input
+from app.services.kb_acl import effective_kb_collection
 
 router = APIRouter(prefix="/v1", tags=["chat"])
 
@@ -169,6 +170,11 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
+            try:
+                kb_coll = effective_kb_collection(db, body.user_id, body.kb_collection)
+            except HTTPException as e:
+                yield _sse("error", {"message": str(e.detail)})
+                return
             is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
@@ -224,7 +230,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                                 client,
                                 body.message,
                                 top_k,
-                                body.kb_collection,
+                                kb_coll,
                                 list(body.doc_types) if body.doc_types else None,
                                 max_hops=max(1, min(2, hops)),
                             )
@@ -235,7 +241,7 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                                 client,
                                 body.message,
                                 top_k,
-                                body.kb_collection,
+                                kb_coll,
                                 list(body.doc_types) if body.doc_types else None,
                             ),
                             [],
@@ -397,6 +403,11 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
+            try:
+                kb_coll = effective_kb_collection(db, body.user_id, body.kb_collection)
+            except HTTPException as e:
+                yield _sse("error", {"message": str(e.detail)})
+                return
             is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
@@ -441,7 +452,7 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 history=hist,
                 top_k=top_k,
                 session_summary=sess.summary or None,
-                kb_collection=body.kb_collection,
+                kb_collection=kb_coll,
                 doc_types=list(body.doc_types) if body.doc_types else None,
                 session_id=sid,
                 request_id=req_id,
@@ -560,6 +571,11 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
+            try:
+                kb_coll = effective_kb_collection(db, body.user_id, body.kb_collection)
+            except HTTPException as e:
+                yield _sse("error", {"message": str(e.detail)})
+                return
             is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
@@ -604,7 +620,7 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
                 history=hist,
                 top_k=top_k,
                 session_summary=sess.summary or None,
-                kb_collection=body.kb_collection,
+                kb_collection=kb_coll,
                 doc_types=list(body.doc_types) if body.doc_types else None,
                 session_id=sid,
                 request_id=req_id,

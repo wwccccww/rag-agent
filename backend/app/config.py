@@ -46,6 +46,8 @@ class Settings(BaseSettings):
     max_upload_mb: int = 50
     # 请求未传 kb_collection 时使用的知识库分区名
     default_kb_collection: str = "default"
+    # True：仅允许访问 user_kb_collections 表中授权的分区（企业内部知识库隔离）；False：兼容旧行为（不信任边界在客户端）
+    kb_acl_enabled: bool = True
     # 向量检索相关性阈值：余弦距离超过此值的片段视为"不相关"直接丢弃
     # cosine_distance ∈ [0,2]，0=完全相同，1=正交，2=相反
     # 略收紧可减轻「勉强相关」的跨文档噪声（过严会降低召回，可按库调参）

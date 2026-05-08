@@ -10,6 +10,19 @@ from app.config import settings
 from app.database import Base
 
 
+class UserKbCollection(Base):
+    """
+    用户可访问的知识库分区（多对多）：user_id + kb_collection 唯一。
+    服务端检索/入库前据此校验，不信任客户端单独传来的分区名。
+    """
+
+    __tablename__ = "user_kb_collections"
+
+    user_id: Mapped[str] = mapped_column(String(128), primary_key=True)
+    kb_collection: Mapped[str] = mapped_column(String(64), primary_key=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Document(Base):
     __tablename__ = "documents"
 

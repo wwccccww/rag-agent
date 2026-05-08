@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.database import Base, engine, init_db
-from app.routers import audit, chat, docs, health, ingest, memory, metrics, multi_agent, sessions, stats
+from app.routers import audit, chat, docs, health, ingest, kb_access, memory, metrics, multi_agent, sessions, stats
 from app.services.reranker import warmup as warmup_reranker
 from app.services.sentry import init_sentry
 
@@ -38,6 +38,7 @@ app.add_middleware(
 
 app.include_router(health.router)
 app.include_router(metrics.router)
+app.include_router(kb_access.router)
 app.include_router(ingest.router)
 app.include_router(chat.router)
 app.include_router(multi_agent.router)

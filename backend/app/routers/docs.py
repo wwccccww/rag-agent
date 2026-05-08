@@ -6,8 +6,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.database import SessionLocal
+from app.config import settings
 from app.kb import normalize_doc_type, resolve_kb_collection, validate_kb_collection_optional
 from app.models import Chunk, Document
+from app.services.kb_acl import (
+    assert_document_collection_readable,
+    effective_kb_collection,
+    list_allowed_collections,
+)
 
 router = APIRouter(prefix="/v1", tags=["documents"])
 
@@ -103,6 +109,7 @@ class ChunkItem(BaseModel):
 
 @router.get("/documents", response_model=list[DocItem])
 def list_documents(
+    user_id: str = Query("demo", max_length=128),
     limit: int = Query(50, ge=1, le=200),
     kb_collection: str | None = Query(None, description="仅列出该分区下的文档"),
     doc_type: str | None = Query(None, description="仅列出该 doc_type（与入库 slug 规则一致）"),
@@ -112,9 +119,26 @@ def list_documents(
         stmt = select(Document, func.count(Chunk.id).label("cnt")).outerjoin(
             Chunk, Chunk.document_id == Document.id
         )
+        if settings.kb_acl_enabled:
+            allowed = list_allowed_collections(db, user_id)
+            if not allowed:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"用户 {user_id!r} 未配置任何可访问的知识库分区"
+                        "（请先 POST /v1/kb-access 授权）"
+                    ),
+                )
+            stmt = stmt.where(Document.kb_collection.in_(allowed))
         if kb_collection is not None and str(kb_collection).strip():
             try:
-                coll = resolve_kb_collection(kb_collection)
+                coll = (
+                    effective_kb_collection(db, user_id, kb_collection)
+                    if settings.kb_acl_enabled
+                    else resolve_kb_collection(kb_collection)
+                )
+            except HTTPException:
+                raise
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
             stmt = stmt.where(Document.kb_collection == coll)
@@ -145,6 +169,7 @@ def list_documents(
 @router.get("/documents/catalog/doc-types")
 def list_distinct_doc_types(
     kb_collection: str | None = Query(None, description="若指定则仅统计该分区下出现过的 doc_type"),
+    user_id: str = Query("demo", max_length=128),
 ) -> dict[str, list[str]]:
     """库中已出现过的 doc_type（去重、排序），供对话页/筛选与知识库实际类型对齐。
 
@@ -153,9 +178,20 @@ def list_distinct_doc_types(
     db = SessionLocal()
     try:
         stmt = select(Document.doc_type).distinct()
+        if settings.kb_acl_enabled:
+            allowed = list_allowed_collections(db, user_id)
+            if not allowed:
+                return {"doc_types": []}
+            stmt = stmt.where(Document.kb_collection.in_(allowed))
         if kb_collection is not None and str(kb_collection).strip():
             try:
-                coll = resolve_kb_collection(kb_collection)
+                coll = (
+                    effective_kb_collection(db, user_id, kb_collection)
+                    if settings.kb_acl_enabled
+                    else resolve_kb_collection(kb_collection)
+                )
+            except HTTPException:
+                raise
             except ValueError as e:
                 raise HTTPException(400, str(e)) from e
             stmt = stmt.where(Document.kb_collection == coll)
@@ -169,6 +205,7 @@ def list_distinct_doc_types(
 @router.get("/documents/{doc_id}/chunks", response_model=list[ChunkItem])
 def list_chunks(
     doc_id: UUID,
+    user_id: str = Query("demo", max_length=128),
     limit: int = Query(100, ge=1, le=500),
     view: str = Query("parent", description="parent=仅父块（默认）；index=仅检索子块；all=全部"),
 ) -> list[ChunkItem]:
@@ -183,6 +220,7 @@ def list_chunks(
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404, "document not found")
+        assert_document_collection_readable(db, user_id, doc.kb_collection)
 
         base = select(Chunk).where(Chunk.document_id == doc_id).order_by(Chunk.chunk_index)
 
@@ -229,7 +267,10 @@ def list_chunks(
 
 
 @router.patch("/documents/batch")
-def batch_patch_documents(body: DocumentBatchMetaPatchBody) -> dict:
+def batch_patch_documents(
+    body: DocumentBatchMetaPatchBody,
+    user_id: str = Query("demo", max_length=128),
+) -> dict:
     """批量修改分区/类型，最多 100 条（与 _BATCH_MAX 一致）；同一事务内依次校验，任一条 409 则整批回滚。"""
     uniq_ids = list(dict.fromkeys(body.document_ids))
     db = SessionLocal()
@@ -243,7 +284,7 @@ def batch_patch_documents(body: DocumentBatchMetaPatchBody) -> dict:
         doc_by_id = {d.id: d for d in docs}
         meta_only = DocumentMetaPatchBody.model_validate(body.model_dump(exclude={"document_ids"}))
         for uid in uniq_ids:
-            _patch_document_row(db, doc_by_id[uid], meta_only)
+            _patch_document_row(db, doc_by_id[uid], meta_only, user_id)
 
         db.commit()
         return {"ok": True, "updated": len(uniq_ids), "document_ids": [str(i) for i in uniq_ids]}
@@ -257,15 +298,23 @@ def batch_patch_documents(body: DocumentBatchMetaPatchBody) -> dict:
         db.close()
 
 
-def _patch_document_row(db: Session, doc: Document, body: DocumentMetaPatchBody) -> None:
+def _patch_document_row(db: Session, doc: Document, body: DocumentMetaPatchBody, user_id: str) -> None:
+    assert_document_collection_readable(db, user_id, doc.kb_collection)
     try:
-        new_kb = (
-            validate_kb_collection_optional(body.kb_collection)
-            if body.kb_collection is not None
-            else doc.kb_collection
-        )
+        if body.kb_collection is not None:
+            validated = validate_kb_collection_optional(body.kb_collection)
+            if validated is None:
+                new_kb = doc.kb_collection
+            elif settings.kb_acl_enabled:
+                new_kb = effective_kb_collection(db, user_id, validated)
+            else:
+                new_kb = resolve_kb_collection(validated)
+        else:
+            new_kb = doc.kb_collection
     except ValueError as e:
         raise HTTPException(400, str(e)) from e
+    except HTTPException:
+        raise
     if body.doc_type is not None:
         try:
             new_dtype = normalize_doc_type(body.doc_type)
@@ -291,14 +340,18 @@ def _patch_document_row(db: Session, doc: Document, body: DocumentMetaPatchBody)
 
 
 @router.patch("/documents/{doc_id}", response_model=DocItem)
-def patch_document(doc_id: UUID, body: DocumentMetaPatchBody) -> DocItem:
+def patch_document(
+    doc_id: UUID,
+    body: DocumentMetaPatchBody,
+    user_id: str = Query("demo", max_length=128),
+) -> DocItem:
     """入库后修改文档分区（kb_collection）与/或类型（doc_type）；检索以 Document 为准，并同步各 chunk 的 meta。"""
     db = SessionLocal()
     try:
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404, "document not found")
-        _patch_document_row(db, doc, body)
+        _patch_document_row(db, doc, body, user_id)
         db.commit()
         db.refresh(doc)
         cnt = db.execute(select(func.count(Chunk.id)).where(Chunk.document_id == doc.id)).scalar() or 0
@@ -316,12 +369,13 @@ def patch_document(doc_id: UUID, body: DocumentMetaPatchBody) -> DocItem:
 
 
 @router.delete("/documents/{doc_id}")
-def delete_document(doc_id: UUID) -> dict:
+def delete_document(doc_id: UUID, user_id: str = Query("demo", max_length=128)) -> dict:
     db = SessionLocal()
     try:
         doc = db.get(Document, doc_id)
         if not doc:
             raise HTTPException(404, "document not found")
+        assert_document_collection_readable(db, user_id, doc.kb_collection)
         db.delete(doc)
         db.commit()
         return {"ok": True}

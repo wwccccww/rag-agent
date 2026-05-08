@@ -83,9 +83,10 @@ export default function DocumentsPage() {
     let cancelled = false;
     void (async () => {
       try {
-        let url = "/api/documents/catalog/doc-types";
+        const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+        let url = `/api/documents/catalog/doc-types?user_id=${encodeURIComponent(uid)}`;
         if (kbFilter.trim()) {
-          url += `?kb_collection=${encodeURIComponent(kbFilter.trim())}`;
+          url += `&kb_collection=${encodeURIComponent(kbFilter.trim())}`;
         }
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok || cancelled) return;
@@ -141,6 +142,11 @@ export default function DocumentsPage() {
     try {
       let path = "/api/documents";
       const p = new URLSearchParams();
+      try {
+        p.set("user_id", localStorage.getItem(USER_ID_KEY) || "demo");
+      } catch {
+        p.set("user_id", "demo");
+      }
       if (kbFilter.trim()) p.set("kb_collection", kbFilter.trim());
       if (docTypeFilter) p.set("doc_type", docTypeFilter);
       if (p.toString()) path += `?${p.toString()}`;
@@ -167,7 +173,10 @@ export default function DocumentsPage() {
     setChunksLoading(true);
     const v = view ?? chunkView;
     try {
-      const r = await fetch(`/api/documents/${doc.id}/chunks?view=${v}`);
+      const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+      const r = await fetch(
+        `/api/documents/${doc.id}/chunks?view=${v}&user_id=${encodeURIComponent(uid)}`,
+      );
       if (!r.ok) return;
       const data = await r.json().catch(() => []);
       setChunks(Array.isArray(data) ? data : []);
@@ -186,7 +195,8 @@ export default function DocumentsPage() {
   const deleteDoc = async (doc: Doc) => {
     if (!confirm(`确认删除「${doc.title ?? doc.source}」及其所有向量片段？`)) return;
     setDeleting(doc.id);
-    await fetch(`/api/documents/${doc.id}`, { method: "DELETE" });
+    const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+    await fetch(`/api/documents/${doc.id}?user_id=${encodeURIComponent(uid)}`, { method: "DELETE" });
     if (selected?.id === doc.id) { setSelected(null); setChunks([]); }
     setSelectedIds((prev) => {
       const n = new Set(prev);
@@ -222,11 +232,15 @@ export default function DocumentsPage() {
     if (dt) body.doc_type = dt;
     setBatchSaving(true);
     try {
-      const r = await fetch("/api/documents/batch", {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
+      const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+      const r = await fetch(
+        `/api/documents/batch?user_id=${encodeURIComponent(uid)}`,
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        },
+      );
       const text = await r.text();
       if (!r.ok) {
         window.alert(text.slice(0, 500) || `请求失败 (${r.status})`);

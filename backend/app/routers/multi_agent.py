@@ -5,7 +5,7 @@ import time
 from typing import Iterator
 from uuid import UUID
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,7 @@ from app.config import settings
 from app.database import SessionLocal
 from app.models import Message, SessionModel
 from app.services.multi_agent import run_multi_agent
+from app.services.kb_acl import effective_kb_collection
 from app.services.ollama import OllamaClient
 from app.services.security import sanitize_user_input
 
@@ -50,6 +51,11 @@ def chat_multi_agent_stream(body: MultiAgentChatRequest) -> StreamingResponse:
         db = SessionLocal()
         client = OllamaClient()
         try:
+            try:
+                kb_coll = effective_kb_collection(db, body.user_id, body.kb_collection)
+            except HTTPException as e:
+                yield _sse("error", {"message": str(e.detail)})
+                return
             is_new_session = not body.session_id
             if body.session_id:
                 sess = db.get(SessionModel, body.session_id)
@@ -80,7 +86,7 @@ def chat_multi_agent_stream(body: MultiAgentChatRequest) -> StreamingResponse:
                 session_id=sid,
                 request_id=req_id,
                 message=body.message,
-                kb_collection=body.kb_collection,
+                kb_collection=kb_coll,
                 doc_types=list(body.doc_types) if body.doc_types else None,
             )
             yield _sse("ma_plan", {"request_id": req_id, "plan": plan_obj})

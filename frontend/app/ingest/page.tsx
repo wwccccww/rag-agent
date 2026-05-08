@@ -109,9 +109,10 @@ export default function IngestPage() {
     let cancelled = false;
     void (async () => {
       try {
-        let url = "/api/documents/catalog/doc-types";
+        const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+        let url = `/api/documents/catalog/doc-types?user_id=${encodeURIComponent(uid)}`;
         if (kbCollection.trim()) {
-          url += `?kb_collection=${encodeURIComponent(kbCollection.trim())}`;
+          url += `&kb_collection=${encodeURIComponent(kbCollection.trim())}`;
         }
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok || cancelled) return;
@@ -162,6 +163,11 @@ export default function IngestPage() {
   };
 
   const appendIngestMeta = (fd: FormData) => {
+    try {
+      fd.append("user_id", localStorage.getItem(USER_ID_KEY) || "demo");
+    } catch {
+      fd.append("user_id", "demo");
+    }
     if (title.trim()) fd.append("title", title.trim());
     const kb = slugKbCollection(kbCollection.trim());
     if (kb) fd.append("kb_collection", kb);

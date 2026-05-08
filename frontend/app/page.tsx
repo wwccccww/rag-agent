@@ -231,9 +231,10 @@ export default function HomePage() {
     let cancelled = false;
     void (async () => {
       try {
-        let url = "/api/documents/catalog/doc-types";
+        const uid = localStorage.getItem(USER_ID_KEY) || "demo";
+        let url = `/api/documents/catalog/doc-types?user_id=${encodeURIComponent(uid)}`;
         if (kbCollection.trim()) {
-          url += `?kb_collection=${encodeURIComponent(kbCollection.trim())}`;
+          url += `&kb_collection=${encodeURIComponent(kbCollection.trim())}`;
         }
         const r = await fetch(url, { cache: "no-store" });
         if (!r.ok || cancelled) return;
@@ -247,7 +248,7 @@ export default function HomePage() {
     return () => {
       cancelled = true;
     };
-  }, [docTypeModalOpen, kbCollection]);
+  }, [docTypeModalOpen, kbCollection, userId]);
 
   const syncSessionsFromServer = async (uid: string, existing: Session[]): Promise<Session[]> => {
     try {
