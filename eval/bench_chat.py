@@ -48,33 +48,46 @@ def bench_once(
     ttft_ms: float | None = None
     current_event: str | None = None
 
-    with client.stream("POST", url, json=payload) as resp:
-        resp.raise_for_status()
-        for line in iter_sse_lines(resp):
-            if line.startswith("event:"):
-                current_event = line[len("event:") :].strip()
-                continue
-            if line.startswith("data:"):
-                data = line[len("data:") :].strip()
-            else:
-                # 兼容后端如果直接输出 json 行
-                data = line.strip()
-            if not data:
-                continue
-            try:
-                obj = json.loads(data)
-            except json.JSONDecodeError:
-                continue
+    try:
+        with client.stream("POST", url, json=payload) as resp:
+            resp.raise_for_status()
+            for line in iter_sse_lines(resp):
+                if line.startswith("event:"):
+                    current_event = line[len("event:") :].strip()
+                    continue
+                if line.startswith("data:"):
+                    data = line[len("data:") :].strip()
+                else:
+                    # 兼容后端如果直接输出 json 行
+                    data = line.strip()
+                if not data:
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
 
-            # 兼容两种协议：
-            # 1) 标准 SSE：event: token + data: {...}
-            # 2) 直接输出 JSON 行：{"type":"token", ...}
-            event_type = current_event or str(obj.get("type") or "")
+                # 兼容两种协议：
+                # 1) 标准 SSE：event: token + data: {...}
+                # 2) 直接输出 JSON 行：{"type":"token", ...}
+                event_type = current_event or str(obj.get("type") or "")
 
-            if ttft_ms is None and event_type == "token":
-                ttft_ms = (time.perf_counter() - t0) * 1000
-            if event_type in ("final", "error"):
-                break
+                # TTFT 口径：
+                # - 普通 /chat/stream：以第一个 token 事件为准
+                # - /chat/agent/stream：以第一个可见进度事件为准（agent_step / sources / token）
+                if ttft_ms is None:
+                    if agent:
+                        if event_type in ("agent_step", "sources", "token"):
+                            ttft_ms = (time.perf_counter() - t0) * 1000
+                    else:
+                        if event_type == "token":
+                            ttft_ms = (time.perf_counter() - t0) * 1000
+                if event_type in ("final", "error"):
+                    break
+    except (httpx.ReadTimeout, httpx.RemoteProtocolError, httpx.HTTPStatusError, httpx.ConnectError) as _e:
+        # 服务端可能异常退出/重启，导致 chunked 响应未完整结束；压测不中断，记为一次失败样本
+        total_ms = (time.perf_counter() - t0) * 1000
+        return ttft_ms, total_ms
 
     total_ms = (time.perf_counter() - t0) * 1000
     return ttft_ms, total_ms

@@ -15,10 +15,12 @@ import sys
 import time
 from pathlib import Path
 from typing import Any
+from contextlib import contextmanager
 
 # ── 把 backend 加入 Python 路径 ──────────────────────────────────────────────
 BACKEND_DIR = Path(__file__).parent.parent / "backend"
 sys.path.insert(0, str(BACKEND_DIR))
+REPO_DIR = Path(__file__).parent.parent.resolve()
 
 # 设置必要环境变量（.env 会由 pydantic-settings 读取）
 import os
@@ -28,9 +30,21 @@ from app.database import SessionLocal, init_db
 from app.kb import sanitize_doc_types_list
 from app.services.ollama import OllamaClient
 from app.services.rag import multi_query_search, search_chunks
+from app.config import settings
 
 
 # ── 纯向量检索（不做 query rewrite，直接 1 次 embedding 搜索）────────────────
+@contextmanager
+def _temp_setting(name: str, value: object):
+    """临时覆盖 settings 的单个字段，用于评测对照实验，退出时恢复。"""
+    old = getattr(settings, name)
+    setattr(settings, name, value)
+    try:
+        yield
+    finally:
+        setattr(settings, name, old)
+
+
 def vector_only_search(
     db,
     ollama: OllamaClient,
@@ -39,7 +53,11 @@ def vector_only_search(
     kb_collection: str | None,
     doc_types: list[str] | None,
 ) -> list[dict[str, Any]]:
-    return search_chunks(db, ollama, query, top_k, kb_collection, doc_types)
+    # 关键点：search_chunks() 默认包含「向量 + pg_trgm + RRF」混合检索逻辑。
+    # 为了做真实的 vector-only 对照，这里在调用期间临时关闭 hybrid_search，
+    # 确保不会执行 pg_trgm 那一路，也不会进行双路 RRF 融合（退化为纯向量排序）。
+    with _temp_setting("hybrid_search", False):
+        return search_chunks(db, ollama, query, top_k, kb_collection, doc_types)
 
 
 # ── Recall@k 计算 ────────────────────────────────────────────────────────────
@@ -123,7 +141,17 @@ def run_eval(
     kb_collection: str | None,
     doc_types: list[str] | None,
 ) -> None:
-    with open(cases_path, encoding="utf-8") as f:
+    # 注意：脚本会 chdir 到 backend/，因此这里对相对路径按仓库根目录解析（Windows 更不易踩坑）
+    cases_p = Path(cases_path)
+    if not cases_p.is_absolute():
+        cases_p = (REPO_DIR / cases_p).resolve()
+    if output_path:
+        out_p = Path(output_path)
+        if not out_p.is_absolute():
+            out_p = (REPO_DIR / out_p).resolve()
+        output_path = str(out_p)
+
+    with open(cases_p, encoding="utf-8") as f:
         data = json.load(f)
     cases = data.get("cases", [])
     if not cases:

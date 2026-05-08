@@ -2,34 +2,227 @@
   "_comment": "每条测试用例字段说明：question=问题，expected_keywords=答案中应包含的关键词（至少命中1个即通过），expected_sources=预期引用的源文件名（可选）",
   "cases": [
     {
-      "id": "tc_001",
-      "question": "系统支持哪些文件格式的上传？",
-      "expected_keywords": ["PDF", "DOCX", "TXT", "Markdown", "Excel"],
-      "expected_sources": []
-    },
-    {
-      "id": "tc_002",
-      "question": "如何查询用户的长期记忆？",
-      "expected_keywords": ["记忆", "memory", "user_id", "向量"],
-      "expected_sources": []
-    },
-    {
-      "id": "tc_003",
-      "question": "混合检索是如何实现的？",
-      "expected_keywords": ["向量", "关键词", "RRF", "pg_trgm", "混合"],
-      "expected_sources": []
-    },
-    {
       "id": "tc_004",
       "question": "HNSW 索引有什么优势？",
       "expected_keywords": ["HNSW", "向量", "索引", "近似", "查询"],
       "expected_sources": []
     },
     {
-      "id": "tc_005",
-      "question": "会话摘要是如何生成的？",
-      "expected_keywords": ["摘要", "summary", "LLM", "会话", "自动"],
+      "id": "tc_006",
+      "question": "请解释 RRF 在混合检索中的作用，并说明它融合了哪些检索信号？",
+      "expected_keywords": ["RRF", "融合", "排序", "向量", "pg_trgm"],
       "expected_sources": []
+    },
+    {
+      "id": "tc_007",
+      "question": "pg_trgm 在本系统中用于做什么？它更适合解决哪类查询？",
+      "expected_keywords": ["pg_trgm", "trgm", "word_similarity", "文本", "关键词"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_008",
+      "question": "HNSW 索引在向量检索里解决什么问题？和暴力扫描相比优势是什么？",
+      "expected_keywords": ["HNSW", "近似", "向量", "索引", "查询"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_009",
+      "question": "对比 RRF、pg_trgm、HNSW：它们分别属于哪一层（融合/文本检索/向量索引），适用场景是什么？",
+      "expected_keywords": ["RRF", "pg_trgm", "HNSW", "场景", "适用"],
+      "expected_sources": []
+    },
+    {
+      "id": "tc_010",
+      "question": "当向量检索召回不佳时，pg_trgm 这一路通常能带来什么补偿？为什么需要 RRF 而不是只用其中一种？",
+      "expected_keywords": ["pg_trgm", "补偿", "RRF", "召回", "融合"],
+      "expected_sources": []
+    },
+
+
+  
+    {
+      "id": "tc_011",
+      "question": "pg_trgm 如何启用扩展？请给出 SQL（包含 IF NOT EXISTS）。",
+      "expected_keywords": ["CREATE EXTENSION", "pg_trgm", "IF NOT EXISTS"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_012",
+      "question": "pg_trgm 给 content 字段建 GIN trigram 索引的 SQL 是什么？请包含索引名 idx_chunks_content_trgm 和 gin_trgm_ops。",
+      "expected_keywords": ["idx_chunks_content_trgm", "USING GIN", "gin_trgm_ops", "chunks", "content"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_013",
+      "question": "pg_trgm 文档里提到的 3 个相似度函数是哪几个？（要求包含 word_similarity / strict_word_similarity / similarity）",
+      "expected_keywords": ["similarity", "word_similarity", "strict_word_similarity"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_014",
+      "question": "pg_trgm 的相似匹配运算符有哪些？请回答 a % b 与 a <-> b 各自含义。",
+      "expected_keywords": ["%", "<->", "similarity", "阈值", "距离"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_015",
+      "question": "RRF 的融合公式是什么？请写出 1/(k+rank) 的形式，并说明 k 的作用。",
+      "expected_keywords": ["1", "k", "rank", "1/(k+rank)", "平滑"],
+      "expected_sources": ["RRF.md"]
+    },
+    {
+      "id": "tc_016",
+      "question": "RRF 经典经验值 k 通常取多少？并说明 k 小/大分别更偏向什么排序特性。",
+      "expected_keywords": ["k=60", "k", "头部", "平滑"],
+      "expected_sources": ["RRF.md"]
+    },
+    {
+      "id": "tc_017",
+      "question": "HNSW 的三个关键参数是什么？请回答 m、ef_construction、ef_search 的含义。",
+      "expected_keywords": ["m", "ef_construction", "ef_search", "召回", "延迟"],
+      "expected_sources": ["HNSW.md"]
+    },
+    {
+      "id": "tc_018",
+      "question": "HNSW 在 RAG 的典型工作流是什么？请包含 HNSW topK、trgm/BM25 topK、RRF 融合、reranker 复排这几个步骤。",
+      "expected_keywords": ["HNSW", "topK", "trgm", "RRF", "reranker"],
+      "expected_sources": ["HNSW.md", "RRF.md", "pg_trgm.md"]
+    },
+    {
+      "id": "tc_019",
+      "question": "pg_trgm 如何加速 ILIKE '%xxx%'？请给出示例 SQL 片段（需包含 ILIKE 和 '%' || :q || '%'）。",
+      "expected_keywords": ["ILIKE", "%", "||", ":q", "LIMIT"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_020",
+      "question": "pg_trgm 文档里提到的相似度阈值参数名是什么？并举例说明召回太少/噪声太多时分别如何调。",
+      "expected_keywords": ["pg_trgm.similarity_threshold", "降低", "提高", "阈值"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+
+    {
+      "id": "tc_021",
+      "question": "pg_trgm 里用于“相似匹配阈值”的 GUC 参数名是什么？（我记得像 pg_trgm.similarty_threshold 这种，可能拼错了）",
+      "expected_keywords": ["pg_trgm.similarity_threshold", "阈值"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_022",
+      "question": "pg_trgm 的“相似匹配运算符”是哪个？我想找 a % b 那种写法，能说明它基于 similarity 阈值。",
+      "expected_keywords": ["a % b", "similarity", "阈值"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_023",
+      "question": "pg_trgm 的“距离运算符”怎么写？是 a <-\u003e b 还是 a <-> b？请给出用于 ORDER BY 排序的示例。",
+      "expected_keywords": ["<->", "ORDER BY", "LIMIT"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_024",
+      "question": "请给出用 GIN 建 trigram 索引的 SQL：idx_chunks_content_trgm、gin_trgm_ops。我老是写成 gin_trgm_op（少个 s）。",
+      "expected_keywords": ["idx_chunks_content_trgm", "gin_trgm_ops", "USING GIN"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_025",
+      "question": "pg_trgm 里用 ILIKE 做包含查询的 SQL 怎么写？我需要那种 content ILIKE '%' || :q || '%' 的形式。",
+      "expected_keywords": ["ILIKE", "%", "||", ":q"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_026",
+      "question": "RRF 的公式里 score(d)=Σ 1/(k+rank)；k 的经典经验值是多少？如果 k 从 60 调到 10，会更偏向头部还是更平滑？",
+      "expected_keywords": ["1/(k+rank)", "k=60", "头部", "平滑"],
+      "expected_sources": ["RRF.md"]
+    },
+
+    
+    {
+      "id": "tc_027",
+      "question": "pg_trgm 的相似度函数我记不清了：是 word similarty 还是 word_similarity？请给出正确函数名。",
+      "expected_keywords": ["word_similarity"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_028",
+      "question": "pg_trgm 的索引操作符是不是 gin_trgm_op？（我可能少打了一个 s）正确写法是什么？",
+      "expected_keywords": ["gin_trgm_ops"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_029",
+      "question": "我想设置 pg_trgm 的阈值：pg_trgm.similarity_threhold 该怎么写才对？（threshold 单词可能拼错）",
+      "expected_keywords": ["pg_trgm.similarity_threshold"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_030",
+      "question": "我想建索引 idx_chunks_content_trgm_lower，但总记不住 lower(content) gin_trgm_ops 这种表达式索引写法，给个正确 SQL。",
+      "expected_keywords": ["idx_chunks_content_trgm_lower", "lower(content)", "gin_trgm_ops"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_031",
+      "question": "pg_trgm 的相似匹配运算符我记成 a %% b 了，正确的是不是 a % b？它与 similarity_threshold 的关系是什么？",
+      "expected_keywords": ["a % b", "similarity_threshold"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_032",
+      "question": "pg_trgm 的距离运算符我记成 a <->> b 了，正确写法是什么？并给出 ORDER BY 示例。",
+      "expected_keywords": ["<->", "ORDER BY"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    
+    {
+      "id": "tc_033",
+      "question": "gin_trgm_opz",
+      "expected_keywords": ["gin_trgm_ops"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_034",
+      "question": "idx_chunks_content_trgm_lowe",
+      "expected_keywords": ["idx_chunks_content_trgm_lower"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_035",
+      "question": "pg_trgm.similarity_thresho1d",
+      "expected_keywords": ["pg_trgm.similarity_threshold"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_036",
+      "question": "strict-word-similarity",
+      "expected_keywords": ["strict_word_similarity"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_037",
+      "question": "word-similarity",
+      "expected_keywords": ["word_similarity"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_038",
+      "question": "a <- > b",
+      "expected_keywords": ["<->"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_039",
+      "question": "a %% b",
+      "expected_keywords": ["a % b"],
+      "expected_sources": ["pg_trgm.md"]
+    },
+    {
+      "id": "tc_040",
+      "question": "CREATE EXTENSION IF NOT EXIST pg_trgm",
+      "expected_keywords": ["CREATE EXTENSION", "IF NOT EXISTS", "pg_trgm"],
+      "expected_sources": ["pg_trgm.md"]
     }
   ]
 }

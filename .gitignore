@@ -14,3 +14,5 @@ frontend/.env.sentry-build-plugin
 frontend/out/
 *.log
 data/
+eval/report.md
+eval/report2.md

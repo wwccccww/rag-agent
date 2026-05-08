@@ -28,6 +28,7 @@ import operator
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from datetime import datetime, timezone
 from typing import Any, Generator
 from uuid import UUID
@@ -625,7 +626,21 @@ def _reflect_on_results(
         },
     ]
     try:
-        raw = ollama.chat_complete(msgs, temperature=0.0).strip()
+        budget_ms = int(getattr(settings, "agent_reflection_budget_ms", 0) or 0)
+
+        def _call() -> str:
+            return ollama.chat_complete(msgs, temperature=0.0).strip()
+
+        if budget_ms > 0:
+            with ThreadPoolExecutor(max_workers=1) as ex:
+                fut = ex.submit(_call)
+                try:
+                    raw = fut.result(timeout=budget_ms / 1000)
+                except FuturesTimeoutError:
+                    logging.info("[Agent] reflect timed out (%dms), skip reflection", budget_ms)
+                    return True, "REFLECTION_TIMEOUT"
+        else:
+            raw = _call()
         is_sufficient = raw.upper().startswith("SUFFICIENT")
         logging.info("[Agent] reflect: sufficient=%s raw=%r", is_sufficient, raw[:80])
         return is_sufficient, raw

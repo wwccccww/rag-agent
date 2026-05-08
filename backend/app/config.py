@@ -139,6 +139,9 @@ class Settings(BaseSettings):
     agent_self_ask_min_chars: int = 20
     # Reflection：每轮工具执行后评估信息是否充足，充足则提前终止循环（会增加一次 LLM 调用耗时）
     agent_reflection_enabled: bool = True
+    # Reflection 评估的延迟预算（ms）。超过预算则跳过反思并默认视为“信息已足够”，避免长尾阻塞。
+    # 设为 0 表示不启用预算（不推荐，可能出现 300s 长尾）。
+    agent_reflection_budget_ms: int = 1500
 
     # ── 边界治理：权限分级 / 失败兜底 / 审计 ──────────────────────────────────
     # 工具策略级别：
