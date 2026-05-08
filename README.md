@@ -564,11 +564,12 @@ python test_hybrid_search.py "/user PUT"
 - **表结构**：`(user_id, kb_collection)` 复合主键；首次迁移后自动 `INSERT` 一行 `('demo','default')`，保证默认演示用户可用。
 - **关闭 ACL（兼容旧脚本 / 单测）**：环境变量 `KB_ACL_ENABLED=false`，行为与改造前一致（仍校验分区名字符规则，但不查表）。
 - **新增用户**：`POST /v1/kb-access`，body `{"user_id":"alice","kb_collection":"hr-handbook"}`；撤销：`DELETE /v1/kb-access?user_id=alice&kb_collection=hr-handbook`。
+- **前端**：主页左侧栏 **「📋 查看可访问分区」**（位于 `kb_collection` 输入框下方）请求 `GET /v1/kb-access?user_id=当前侧栏 user_id`，弹层展示已授权分区列表（与手动 curl 等价）。
 
 **测试步骤：**
 
 1. 启动后端（`KB_ACL_ENABLED` 保持默认或显式 `true`），确认日志含 `user_kb_collections index + demo seed ready`（或表已存在时仅索引日志）。
-2. `GET http://127.0.0.1:8000/v1/kb-access?user_id=demo`，预期 JSON 含 `"kb_collections": ["default"]`。
+2. `GET http://127.0.0.1:8000/v1/kb-access?user_id=demo`，预期 JSON 含 `"kb_collections": ["default"]`。（或打开 `http://localhost:3000`，侧栏 `user_id` 填 `demo`，点击 **「📋 查看可访问分区」**，弹层中应列出 `default`。）
 3. `POST /v1/kb-access`，body `{"user_id":"demo","kb_collection":"rag_demo"}`；再次 GET，列表应含 `default` 与 `rag_demo`。
 4. 用同一 `user_id=demo` 在入库 Form 中写入 `kb_collection=rag_demo` 上传小文本；`GET /v1/documents?user_id=demo&kb_collection=rag_demo` 应能看到该文档。
 5. 将 `user_id` 改为未授权用户（如 `stranger`）且未先 POST kb-access，请求 `GET /v1/documents?user_id=stranger` 应返回 **403**，响应体提示未配置可访问分区。

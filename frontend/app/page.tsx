@@ -173,6 +173,8 @@ export default function HomePage() {
   const [histLoading, setHistLoading] = useState(false);
   const [health, setHealth] = useState<string | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [kbAccessPanel, setKbAccessPanel] = useState<string | null>(null);
+  const [kbAccessLoading, setKbAccessLoading] = useState(false);
   const [memToast, setMemToast] = useState<string | null>(null);
   const [chatMode, setChatMode] = useState<ChatMode>("rag");
   const [syncing, setSyncing] = useState(false);
@@ -506,6 +508,36 @@ export default function HomePage() {
       setHealth(String(e));
     } finally {
       setHealthLoading(false);
+    }
+  };
+
+  const fetchKbAccessList = async () => {
+    const uid = userId.trim() || "demo";
+    setKbAccessLoading(true);
+    try {
+      const r = await fetch(`/api/kb-access?user_id=${encodeURIComponent(uid)}`, { cache: "no-store" });
+      const t = await r.text();
+      let lines = `HTTP ${r.status}\n`;
+      if (!r.ok) {
+        lines += t;
+        setKbAccessPanel(lines);
+        return;
+      }
+      try {
+        const j = JSON.parse(t) as { kb_collections?: string[] };
+        const list = Array.isArray(j.kb_collections) ? j.kb_collections : [];
+        lines += `当前 user_id：${uid}\n\n`;
+        lines += `可访问分区（kb_collection）共 ${list.length} 个：\n`;
+        lines += list.length ? list.map((c) => `  • ${c}`).join("\n") : "  （无 — KB_ACL 开启时入库/检索需先 POST /v1/kb-access 授权）";
+        lines += "\n\n提示：侧栏「kb_collection」留空时，服务端会用 DEFAULT_KB_COLLECTION；若该分区不在上表中且 ACL 开启，会回落到表内字典序第一项。";
+      } catch {
+        lines += t;
+      }
+      setKbAccessPanel(lines);
+    } catch (e) {
+      setKbAccessPanel(String(e));
+    } finally {
+      setKbAccessLoading(false);
     }
   };
 
@@ -889,6 +921,16 @@ export default function HomePage() {
               saveKbCollection(e.target.value);
             }}
           />
+          <button
+            type="button"
+            className="btn"
+            style={{ width: "100%", justifyContent: "center", marginTop: 8, fontSize: 12 }}
+            onClick={fetchKbAccessList}
+            disabled={kbAccessLoading}
+            title="查询后端 user_kb_collections 表中当前 user_id 已授权的分区"
+          >
+            {kbAccessLoading ? "查询中…" : "📋 查看可访问分区"}
+          </button>
           <div className="field-label" style={{ marginBottom: 4, marginTop: 10 }}>检索文档类型</div>
           <button
             type="button"
@@ -970,6 +1012,13 @@ export default function HomePage() {
           <div className="health-pop-wrap">
             <pre className="health-pop">{health}</pre>
             <button className="health-pop-close" onClick={() => setHealth(null)} title="关闭">×</button>
+          </div>
+        )}
+
+        {kbAccessPanel && (
+          <div className="health-pop-wrap">
+            <pre className="health-pop">{kbAccessPanel}</pre>
+            <button className="health-pop-close" onClick={() => setKbAccessPanel(null)} title="关闭">×</button>
           </div>
         )}
 
