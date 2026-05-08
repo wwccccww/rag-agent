@@ -14,7 +14,7 @@ from sqlalchemy import func, select
 from app.config import settings
 from app.database import SessionLocal
 from app.models import Message, SessionModel
-from app.schemas import AgentChatRequest, ChatStreamRequest, PlanExecuteRequest
+from app.schemas import AgentChatRequest, ChatContinueRequest, ChatStreamRequest, PlanExecuteRequest
 from app.routers.memory import maybe_auto_memory
 from app.services.ollama import OllamaClient
 from app.services.citation_guard import sanitize_assistant_citations
@@ -378,6 +378,8 @@ def chat_stream(body: ChatStreamRequest) -> StreamingResponse:
                 "memory_writes": [mem_written] if mem_written else [],
                 "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
+                "truncated": (client.last_stream_done_reason == "length"),
+                "done_reason": client.last_stream_done_reason,
             }
             if session_title:
                 final_payload["session_title"] = session_title
@@ -554,6 +556,8 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
                 "memory_writes": [mem_written] if mem_written else [],
                 "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
+                "truncated": (client.last_stream_done_reason == "length"),
+                "done_reason": client.last_stream_done_reason,
             }
             if session_title:
                 final_payload["session_title"] = session_title
@@ -575,6 +579,161 @@ def chat_agent_stream(body: AgentChatRequest) -> StreamingResponse:
             _maybe_summarize(db, client, sess)
         except Exception as e:
             logging.exception("[Agent] stream error")
+            yield _sse("error", {"message": str(e)})
+        finally:
+            client.close()
+            db.close()
+
+    headers = {
+        "Cache-Control": "no-cache",
+        "Connection": "keep-alive",
+        "X-Accel-Buffering": "no",
+    }
+    return StreamingResponse(gen(), media_type="text/event-stream; charset=utf-8", headers=headers)
+
+
+@router.post("/chat/continue/stream")
+def chat_continue_stream(body: ChatContinueRequest) -> StreamingResponse:
+    """用户点击“继续生成”后，续写上一条 assistant 回复。"""
+
+    def gen() -> Iterator[str]:
+        db = SessionLocal()
+        client = OllamaClient()
+        try:
+            sess = db.get(SessionModel, body.session_id)
+            if not sess or sess.user_id != body.user_id:
+                yield _sse("error", {"message": "session not found"})
+                return
+
+            # 取全量消息用于定位上一轮问答（量不大，且继续生成不高频）
+            all_rows = (
+                db.execute(
+                    select(Message)
+                    .where(Message.session_id == sess.id)
+                    .order_by(Message.created_at.asc())
+                )
+                .scalars()
+                .all()
+            )
+            last_user: Message | None = None
+            last_assistant: Message | None = None
+            for m in reversed(all_rows):
+                if m.role == "assistant" and last_assistant is None:
+                    last_assistant = m
+                    continue
+                if m.role == "user":
+                    last_user = m
+                    break
+
+            if not last_user or not last_assistant:
+                yield _sse("error", {"message": "no message to continue"})
+                return
+
+            # 启发式判断是否像被截断（避免按钮误点导致无意义重复）
+            tail = (last_assistant.content or "").strip()[-30:]
+            looks_cut = (not tail.endswith(("。", "！", "？", "…", "”", "）", "]"))) and (len(tail) >= 8)
+            if not looks_cut:
+                yield _sse("error", {"message": "last answer does not look truncated"})
+                return
+
+            top_k = body.top_k or settings.rag_top_k
+            kb_coll = effective_kb_collection(db, body.user_id, body.kb_collection)
+
+            # 续写仍走 RAG：确保继续内容保持“仅基于片段”的约束
+            if getattr(settings, "rag_multihop_enabled", False):
+                hops = int(getattr(settings, "rag_multihop_max_hops", 2) or 2)
+                sources, hop_trace = multi_hop_search(
+                    db,
+                    client,
+                    last_user.content,
+                    top_k,
+                    kb_coll,
+                    list(body.doc_types) if body.doc_types else None,
+                    max_hops=max(1, min(2, hops)),
+                )
+            else:
+                sources = multi_query_search(
+                    db,
+                    client,
+                    last_user.content,
+                    top_k,
+                    kb_coll,
+                    list(body.doc_types) if body.doc_types else None,
+                )
+                hop_trace = []
+
+            if hop_trace:
+                for h in hop_trace:
+                    yield _sse(
+                        "rag_hop",
+                        {
+                            "session_id": str(sess.id),
+                            "hop": h.get("hop"),
+                            "query": h.get("query"),
+                            "count": h.get("count"),
+                            "reason": h.get("reason"),
+                        },
+                    )
+
+            pub_sources = [
+                {
+                    "chunk_id": str(s["chunk_id"]),
+                    "source": s.get("source"),
+                    "page": s.get("page"),
+                    "section_heading": s.get("section_heading"),
+                    "score": s.get("score"),
+                    "snippet": s.get("snippet"),
+                }
+                for s in sources
+            ]
+            yield _sse("sources", {"session_id": str(sess.id), "sources": pub_sources})
+
+            mem_lines = search_memories(db, client, body.user_id, last_user.content, 5)
+            system_prompt = _build_system_prompt(sources, mem_lines, sess.summary or None)
+
+            # 最近历史（含最后一条 assistant partial），然后加续写指令
+            hist_rows = (
+                db.execute(
+                    select(Message)
+                    .where(Message.session_id == sess.id)
+                    .order_by(Message.created_at.desc())
+                    .limit(settings.chat_history_turns * 2 + 2)
+                )
+                .scalars()
+                .all()
+            )
+            hist = list(reversed(hist_rows))
+            ollama_messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
+            for m in hist:
+                if m.role in ("user", "assistant"):
+                    ollama_messages.append({"role": m.role, "content": m.content})
+            ollama_messages.append({
+                "role": "user",
+                "content": "上一次回答可能被截断。请从结尾处继续续写，直接补全剩余内容，不要重复已经输出过的部分。",
+            })
+
+            full = ""
+            token_count = 0
+            t_stream_start = time.perf_counter()
+            for delta in client.chat_stream(ollama_messages, temperature=0.3):
+                full += delta
+                token_count += 1
+                yield _sse("token", {"delta": delta})
+
+            if full:
+                last_assistant.content = (last_assistant.content or "") + full
+                sess.updated_at = datetime.now(timezone.utc)
+                db.commit()
+
+            elapsed = time.perf_counter() - t_stream_start
+            tps = round(token_count / elapsed, 1) if elapsed > 0 else 0.0
+            yield _sse("final", {
+                "session_id": str(sess.id),
+                "stats": {"tokens": token_count, "tok_per_sec": tps},
+                "truncated": (client.last_stream_done_reason == "length"),
+                "done_reason": client.last_stream_done_reason,
+            })
+        except Exception as e:
             yield _sse("error", {"message": str(e)})
         finally:
             client.close()
@@ -762,6 +921,8 @@ def chat_plan_execute_stream(body: PlanExecuteRequest) -> StreamingResponse:
                 "memory_writes": [mem_written] if mem_written else [],
                 "kg_writes": [kg_written] if kg_written and (kg_written.get("entities", 0) or kg_written.get("relations", 0)) else [],
                 "stats": {"tokens": token_count, "tok_per_sec": tps},
+                "truncated": (client.last_stream_done_reason == "length"),
+                "done_reason": client.last_stream_done_reason,
             }
             if session_title:
                 final_payload["session_title"] = session_title

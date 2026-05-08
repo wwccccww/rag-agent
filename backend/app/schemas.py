@@ -64,6 +64,25 @@ class ChatStreamRequest(BaseModel):
         return _validate_doc_types(v)
 
 
+class ChatContinueRequest(BaseModel):
+    """用户点击“继续生成”后续写上一条回答。"""
+    user_id: str = Field(default="demo")
+    session_id: UUID
+    top_k: int | None = None
+    kb_collection: str | None = Field(default=None, max_length=64)
+    doc_types: list[str] | None = None
+
+    @field_validator("kb_collection", mode="before")
+    @classmethod
+    def _v_kb_collection_continue(cls, v: object) -> str | None:
+        return _validate_kb(v)
+
+    @field_validator("doc_types", mode="before")
+    @classmethod
+    def _v_doc_types_continue(cls, v: object) -> list[str] | None:
+        return _validate_doc_types(v)
+
+
 class AgentChatRequest(BaseModel):
     """Agent 模式请求，LLM 自主决策是否调用工具。"""
     user_id: str = Field(default="demo")

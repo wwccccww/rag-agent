@@ -45,6 +45,8 @@ class OllamaClient:
     def __init__(self) -> None:
         self.base = settings.ollama_base_url.rstrip("/")
         self._client = httpx.Client(timeout=httpx.Timeout(300.0, connect=10.0))
+        # 最近一次 stream 的停止原因（Ollama: done_reason/stop_reason），供上层判断是否截断
+        self.last_stream_done_reason: str | None = None
 
     def close(self) -> None:
         self._client.close()
@@ -181,14 +183,24 @@ class OllamaClient:
         return result
 
     def chat_stream(self, messages: list[dict[str, str]], temperature: float = 0.3) -> Iterator[str]:
-        t0 = time.perf_counter()
+        """流式对话输出。
+
+        注意：是否自动续写由上层决定（前端可用按钮触发）。
+        本方法会记录 `last_stream_done_reason`，用于上层在 `final` 中标记是否截断。
+        """
+
+        num_predict = int(getattr(settings, "ollama_num_predict", 0) or 0)
+        base_options: dict[str, Any] = {"temperature": temperature}
+        if num_predict > 0:
+            base_options["num_predict"] = num_predict
+
+        t0_all = time.perf_counter()
         first_token = True
         ttft_ms: float | None = None
-        total_tokens = 0
-        num_predict = int(getattr(settings, "ollama_num_predict", 0) or 0)
-        options: dict[str, Any] = {"temperature": temperature}
-        if num_predict > 0:
-            options["num_predict"] = num_predict
+        done_reason: str | None = None
+        total_eval_tokens = 0
+
+        t0 = time.perf_counter()
         with self._client.stream(
             "POST",
             f"{self.base}/api/chat",
@@ -196,7 +208,7 @@ class OllamaClient:
                 "model": settings.ollama_chat_model,
                 "messages": messages,
                 "stream": True,
-                "options": options,
+                "options": dict(base_options),
             },
         ) as resp:
             resp.raise_for_status()
@@ -208,24 +220,33 @@ class OllamaClient:
                 except json.JSONDecodeError:
                     continue
                 if obj.get("done"):
+                    done_reason = obj.get("done_reason") or obj.get("stop_reason")
                     elapsed = (time.perf_counter() - t0) * 1000
-                    eval_tokens = obj.get("eval_count", total_tokens)
+                    eval_tokens = int(obj.get("eval_count", 0) or 0)
+                    total_eval_tokens += eval_tokens
                     tps = eval_tokens / (elapsed / 1000) if elapsed > 0 else 0
                     logging.info(
-                        "[Ollama] stream done %.0fms | tokens=%s %.1f tok/s",
-                        elapsed, eval_tokens, tps,
+                        "[Ollama] stream done %.0fms | tokens=%s %.1f tok/s | done_reason=%s",
+                        elapsed,
+                        eval_tokens,
+                        tps,
+                        done_reason,
                     )
-                    telemetry.record_stream(ttft_ms=ttft_ms, total_ms=elapsed, tokens=int(eval_tokens))
                     break
+
                 m = obj.get("message") or {}
                 piece = m.get("content") or ""
                 if piece:
                     if first_token:
-                        ttft_ms = (time.perf_counter() - t0) * 1000
+                        ttft_ms = (time.perf_counter() - t0_all) * 1000
                         logging.info("[Ollama] first token %.0fms", ttft_ms)
                         first_token = False
-                    total_tokens += 1
                     yield piece
+
+        self.last_stream_done_reason = done_reason
+        elapsed_all = (time.perf_counter() - t0_all) * 1000
+        if total_eval_tokens > 0:
+            telemetry.record_stream(ttft_ms=ttft_ms, total_ms=elapsed_all, tokens=int(total_eval_tokens))
 
 
 def get_ollama() -> OllamaClient:

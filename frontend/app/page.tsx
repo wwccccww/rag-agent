@@ -77,6 +77,8 @@ type ChatMsg = {
   agentSteps?: AgentStep[];
   chatMode?: ChatMode;
   stats?: MsgStats;
+  truncated?: boolean;
+  doneReason?: string | null;
   memoryWrites?: string[];
   kgWrites?: KGWrite[];
   /** Plan & Execute 模式专属 */
@@ -192,6 +194,7 @@ export default function HomePage() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const editInputRef = useRef<HTMLInputElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const continueAbortRef = useRef<AbortController | null>(null);
 
   // 初始化：从 localStorage 恢复会话列表，同时从服务器同步
   useEffect(() => {
@@ -544,7 +547,106 @@ export default function HomePage() {
   const stopGeneration = () => {
     abortRef.current?.abort();
     abortRef.current = null;
+    continueAbortRef.current?.abort();
+    continueAbortRef.current = null;
     setMessages((m) => m.map((msg) => (msg.streaming ? { ...msg, streaming: false } : msg)));
+    setBusy(false);
+  };
+
+  const continueGenerate = async (assistantMsgId: number) => {
+    if (busy) return;
+    if (!currentSession) {
+      window.alert("当前没有 session_id，无法续写。请先发送一条消息创建会话。");
+      return;
+    }
+    setBusy(true);
+    setMessages((m) =>
+      m.map((msg) =>
+        msg.id === assistantMsgId ? { ...msg, streaming: true, truncated: false } : msg
+      )
+    );
+
+    const payload: Record<string, unknown> = { user_id: userId, session_id: currentSession, top_k: 8 };
+    if (kbCollection.trim()) payload.kb_collection = kbCollection.trim();
+    const docTypesPayload = activeDocTypes
+      .map((x) => slugDocType(x))
+      .filter((x): x is string => !!x)
+      .filter((x, i, a) => a.indexOf(x) === i);
+    if (docTypesPayload.length > 0) payload.doc_types = docTypesPayload;
+
+    const controller = new AbortController();
+    continueAbortRef.current = controller;
+
+    let res: Response;
+    try {
+      res = await fetch("/api/chat/continue/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+    } catch (e) {
+      if ((e as Error).name === "AbortError") { setBusy(false); return; }
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, content: msg.content + `\n\n（续写失败：${String(e)}）`, streaming: false }
+            : msg
+        )
+      );
+      setBusy(false);
+      return;
+    }
+    if (!res.ok) {
+      const t = await res.text();
+      setMessages((m) =>
+        m.map((msg) =>
+          msg.id === assistantMsgId
+            ? { ...msg, content: msg.content + `\n\n（续写请求失败 ${res.status}: ${t}）`, streaming: false }
+            : msg
+        )
+      );
+      setBusy(false);
+      return;
+    }
+
+    await consumeSse(res, (event, data) => {
+      if (event === "token" && data && typeof data === "object") {
+        const delta = (data as { delta?: string }).delta ?? "";
+        if (!delta) return;
+        setMessages((m) =>
+          m.map((msg) => (msg.id === assistantMsgId ? { ...msg, content: msg.content + delta } : msg))
+        );
+      }
+      if (event === "final" && data && typeof data === "object") {
+        const d = data as { stats?: MsgStats; truncated?: boolean; done_reason?: string | null };
+        setMessages((m) =>
+          m.map((msg) =>
+            msg.id === assistantMsgId
+              ? {
+                  ...msg,
+                  streaming: false,
+                  stats: d.stats ?? msg.stats,
+                  truncated: !!d.truncated,
+                  doneReason: (d.done_reason ?? null) as string | null,
+                }
+              : msg
+          )
+        );
+      }
+      if (event === "error" && data && typeof data === "object") {
+        const msg = (data as { message?: string }).message ?? "未知错误";
+        setMessages((m) =>
+          m.map((s) =>
+            s.id === assistantMsgId
+              ? { ...s, content: s.content + `\n\n（续写错误：${msg}）`, streaming: false }
+              : s
+          )
+        );
+      }
+    });
+
+    continueAbortRef.current = null;
     setBusy(false);
   };
 
@@ -751,6 +853,8 @@ export default function HomePage() {
           session_title?: string;
           stats?: MsgStats;
           assistant_content?: string;
+          truncated?: boolean;
+          done_reason?: string | null;
         };
         const writes = d.memory_writes ?? [];
         if (writes.length > 0) {
@@ -791,6 +895,15 @@ export default function HomePage() {
         if (d.stats) {
           setMessages((m) =>
             m.map((msg) => (msg.id === aId ? { ...msg, stats: d.stats } : msg))
+          );
+        }
+        if (typeof d.truncated === "boolean") {
+          setMessages((m) =>
+            m.map((msg) =>
+              msg.id === aId
+                ? { ...msg, truncated: d.truncated, doneReason: (d.done_reason ?? null) as string | null }
+                : msg
+            )
           );
         }
       }
@@ -1036,7 +1149,7 @@ export default function HomePage() {
               <p>先在左侧「文档入库」上传文档，然后在这里提问，助手会检索相关片段并给出带引用的回答。</p>
             </div>
           ) : (
-            messages.map((msg) => <MessageRow key={msg.id} msg={msg} />)
+            messages.map((msg) => <MessageRow key={msg.id} msg={msg} onContinue={continueGenerate} busy={busy} />)
           )}
           <div ref={chatEndRef} />
         </div>
@@ -1277,7 +1390,7 @@ function formatTime(iso?: string): string {
   }
 }
 
-const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
+const MessageRow = memo(function MessageRow({ msg, onContinue, busy }: { msg: ChatMsg; onContinue: (id: number) => void; busy: boolean }) {
   const [sourcesOpen, setSourcesOpen] = useState(false);
   const [highlightIdx, setHighlightIdx] = useState<number | null>(null);
   const [copied, setCopied] = useState(false);
@@ -1562,6 +1675,16 @@ const MessageRow = memo(function MessageRow({ msg }: { msg: ChatMsg }) {
               {msg.role === "assistant" && msg.content && (
                 <button className="msg-copy-btn" onClick={copyContent} title="复制回答">
                   {copied ? "✓ 已复制" : "复制"}
+                </button>
+              )}
+              {msg.role === "assistant" && !msg.streaming && msg.truncated && (
+                <button
+                  className="msg-copy-btn"
+                  onClick={() => onContinue(msg.id)}
+                  disabled={busy}
+                  title={msg.doneReason ? `被截断（${msg.doneReason}），点击续写` : "点击继续生成"}
+                >
+                  继续生成
                 </button>
               )}
             </div>

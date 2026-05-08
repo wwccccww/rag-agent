@@ -1,0 +1,23 @@
+import { NextResponse } from "next/server";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
+
+export async function POST(req: Request) {
+  const body = await req.text();
+  const r = await fastapiFetch("/v1/chat/continue/stream", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body,
+  });
+
+  const ct = r.headers.get("content-type") ?? "text/event-stream; charset=utf-8";
+  return new NextResponse(r.body, {
+    status: r.status,
+    headers: {
+      "Content-Type": ct,
+      "Cache-Control": "no-cache, no-transform",
+      Connection: "keep-alive",
+      "X-Accel-Buffering": "no",
+    },
+  });
+}
+

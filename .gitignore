@@ -13,3 +13,4 @@ frontend/.env.local
 frontend/.env.sentry-build-plugin
 frontend/out/
 *.log
+data/

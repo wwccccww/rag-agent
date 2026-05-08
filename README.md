@@ -183,6 +183,7 @@ npm run dev
 | `POST /v1/kb-access`         | JSON `{"user_id","kb_collection"}`：为用户增加一个分区授权（幂等） |
 | `DELETE /v1/kb-access`       | 查询参数 `user_id` + `kb_collection`：撤销该用户对某分区的访问 |
 | `POST /v1/chat/stream`       | SSE：`sources` → `token*` → `final`。`final` 可含 `assistant_content`：与入库助手消息一致；当引用后处理移除了无效的 `[Sk]` 时，前端应用该字段**覆盖**已流式拼接的正文 |
+| `POST /v1/chat/continue/stream` | **继续生成（续写）**：当 `final.truncated=true`（通常是输出长度触顶）时，前端展示“继续生成”按钮；点击后用同一会话续写上一条 assistant 回复 |
 | `POST /v1/chat/agent/stream` | **Agent 模式**（ReAct）；SSE 序列同上，亦支持 `final.assistant_content`                              |
 | `POST /v1/chat/plan_execute/stream` | **Plan & Execute 模式**；SSE 新增 `plan` / `plan_step_start` / `plan_step_done` 事件 |
 | `POST /v1/chat/multi_agent/stream` | **Multi-Agent（档2）**；SSE：`ma_plan` / `ma_worker_result` / `token*` / `final` |
