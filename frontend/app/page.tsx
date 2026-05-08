@@ -1397,6 +1397,7 @@ const MessageRow = memo(function MessageRow({ msg, onContinue, busy }: { msg: Ch
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set());
   const [ragHopsOpen, setRagHopsOpen] = useState(false);
   const [expandedHops, setExpandedHops] = useState<Set<number>>(new Set());
+  const [expandedMAWorkers, setExpandedMAWorkers] = useState<Set<string>>(new Set());
   const hasSources = (msg.sources?.length ?? 0) > 0;
 
   const toggleStep = (i: number) =>
@@ -1410,6 +1411,13 @@ const MessageRow = memo(function MessageRow({ msg, onContinue, busy }: { msg: Ch
     setExpandedHops((prev) => {
       const next = new Set(prev);
       next.has(i) ? next.delete(i) : next.add(i);
+      return next;
+    });
+
+  const toggleMAWorker = (w: string) =>
+    setExpandedMAWorkers((prev) => {
+      const next = new Set(prev);
+      next.has(w) ? next.delete(w) : next.add(w);
       return next;
     });
 
@@ -1506,7 +1514,16 @@ const MessageRow = memo(function MessageRow({ msg, onContinue, busy }: { msg: Ch
           {msg.maWorkers.map((w) => (
             <div key={w.worker} className={`plan-step-row ${w.ok ? "done" : "error"}`}>
               <span className="plan-step-num">{w.worker}</span>
-              <span className="plan-step-desc">{w.text.slice(0, 140)}{w.text.length > 140 ? "…" : ""}</span>
+              <span
+                className="plan-step-desc"
+                style={{ cursor: "pointer" }}
+                title="点击展开/收起完整输出"
+                onClick={() => toggleMAWorker(w.worker)}
+              >
+                {expandedMAWorkers.has(w.worker)
+                  ? w.text
+                  : (w.text.slice(0, 180) + (w.text.length > 180 ? "…" : ""))}
+              </span>
               <span className={`plan-step-dot ${w.ok ? "done" : "error"}`} />
             </div>
           ))}

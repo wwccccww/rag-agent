@@ -49,6 +49,79 @@ class WorkerResult:
     steps_trace: list[dict[str, Any]]
 
 
+def _compress_sources_for_synth(
+    sources: list[dict[str, Any]],
+    *,
+    max_items: int = 6,
+    max_chars_per_item: int = 360,
+    max_total_chars: int = 4200,
+) -> list[dict[str, Any]]:
+    """将检索 sources 压缩为 synth 可用的证据块，避免上下文挤爆。
+
+    只保留 synth 真正需要引用的字段：编号、来源、节标题、页码、短证据片段（snippet 优先）。
+    """
+    out: list[dict[str, Any]] = []
+    used = 0
+    seen: set[str] = set()
+
+    for s in sources[: max_items * 3]:
+        if not isinstance(s, dict):
+            continue
+        cid = s.get("chunk_id")
+        key = str(cid) if cid is not None else ""
+        if key and key in seen:
+            continue
+        if key:
+            seen.add(key)
+
+        src = s.get("source")
+        sec = s.get("section_heading")
+        page = s.get("page")
+        text = (s.get("snippet") or s.get("full_content") or "")
+        if not isinstance(text, str):
+            text = str(text)
+        text = text.strip().replace("\r\n", "\n")
+        if not text:
+            continue
+        if len(text) > max_chars_per_item:
+            text = text[:max_chars_per_item] + "…"
+
+        item = {
+            "id": f"S{len(out) + 1}",
+            "chunk_id": key or None,
+            "source": src if isinstance(src, str) else None,
+            "section_heading": sec if isinstance(sec, str) else None,
+            "page": page if isinstance(page, int) else None,
+            "evidence": text,
+        }
+        add_len = len(item["evidence"]) + len(item.get("source") or "") + len(item.get("section_heading") or "") + 20
+        if used + add_len > max_total_chars:
+            break
+        used += add_len
+        out.append(item)
+        if len(out) >= max_items:
+            break
+    return out
+
+
+def _followup_query_from_critic(critic_obj: dict[str, Any], fallback: str) -> str | None:
+    """从 critic 的 suggestions/gaps 中提取一个适合二次检索的短 query。"""
+    suggestions = critic_obj.get("suggestions")
+    gaps = critic_obj.get("gaps")
+    cand: list[str] = []
+    if isinstance(suggestions, list):
+        cand.extend([str(x).strip() for x in suggestions if str(x).strip()])
+    if isinstance(gaps, list) and not cand:
+        cand.extend([str(x).strip() for x in gaps if str(x).strip()])
+    if not cand:
+        return None
+    q = "；".join(cand[:2]).replace("建议：", "").replace("建议", "").strip()
+    q = q[:80]
+    if len(q) < 6:
+        q = fallback[:60]
+    return q
+
+
 def get_retriever_allowed_tools() -> set[str]:
     """Multi-Agent（档2）retriever worker 的工具白名单（可配置放行 web_search）。"""
     allowed = {"search_knowledge_base", "recall_user_memory", "get_current_datetime"}
@@ -236,8 +309,71 @@ def run_multi_agent(
         critic_obj = {"conflicts": [], "gaps": ["critic 输出解析失败"], "suggestions": []}
     worker_results.append(WorkerResult(worker="critic", ok=True, text=json.dumps(critic_obj, ensure_ascii=False), sources=[], steps_trace=[]))
 
+    # 4b) 若 critic 指出 gaps/suggestions 且证据不足，则追加一轮“二次检索”（自动 follow-up）
+    retriever_sources: list[dict[str, Any]] = []
+    for wr in worker_results:
+        if wr.worker == "retriever" and wr.sources:
+            retriever_sources = list(wr.sources)
+            break
+
+    gaps = critic_obj.get("gaps") if isinstance(critic_obj, dict) else None
+    suggestions = critic_obj.get("suggestions") if isinstance(critic_obj, dict) else None
+    has_gaps = isinstance(gaps, list) and len([x for x in gaps if str(x).strip()]) > 0
+    has_suggestions = isinstance(suggestions, list) and len([x for x in suggestions if str(x).strip()]) > 0
+    need_followup = (has_gaps or has_suggestions) and len(retriever_sources) < 4
+
+    if need_followup:
+        follow_q = _followup_query_from_critic(critic_obj if isinstance(critic_obj, dict) else {}, message)
+        if follow_q:
+            from app.database import SessionLocal  # noqa: PLC0415
+            _db3 = SessionLocal()
+            _client3 = OllamaClient()
+            try:
+                allowed = get_retriever_allowed_tools()
+                task = (
+                    "请继续搜索知识库以补全缺口。\n"
+                    f"原问题：{message}\n"
+                    f"二次检索 query：{follow_q}\n"
+                    "要求：务必调用 search_knowledge_base，并输出与问题相关的关键原文摘录。"
+                )
+                r2 = _run_worker_agent(
+                    db=_db3,
+                    ollama=_client3,
+                    user_id=user_id,
+                    session_id=session_id,
+                    request_id=request_id,
+                    worker="retriever_followup",
+                    task=task,
+                    allowed_tools=allowed,
+                    tool_max_calls=4,
+                    kb_collection=kb_collection,
+                    doc_types=doc_types,
+                )
+                worker_results.append(r2)
+                if r2.sources:
+                    retriever_sources.extend(list(r2.sources))
+                # 计划里补记一步（便于前端 ma_plan 展示）
+                if isinstance(plan_obj, dict) and isinstance(plan_obj.get("steps"), list):
+                    steps2 = plan_obj["steps"]
+                    try:
+                        next_id = max(int(s.get("id") or 0) for s in steps2 if isinstance(s, dict)) + 1
+                    except Exception:
+                        next_id = len(steps2) + 1
+                    steps2.append({"id": next_id, "worker": "retriever", "task": "二次检索（follow-up）", "inputs": {"query": follow_q}})
+            finally:
+                _client3.close()
+                _db3.close()
+
+    evidence = _compress_sources_for_synth(
+        retriever_sources,
+        max_items=6,
+        max_chars_per_item=380,
+        max_total_chars=4200,
+    )
+
     synth_context = {
         "question": message,
+        "evidence": evidence,
         "worker_results": [
             {"worker": wr.worker, "ok": wr.ok, "text": wr.text} for wr in worker_results
         ],
@@ -248,7 +384,12 @@ def run_multi_agent(
     synth_system = (
         "你是最终回答生成器（Synthesizer）。你将基于 retriever/solver 的证据与 critic 的缺口提示生成最终回答。\n"
         "若 evidence 不足，明确说明不确定性并给出下一步建议。\n"
-        "尽量引用 retriever 给出的 [Sx] 片段编号（如果存在）。"
+        "优先使用输入中的 evidence 列表作为可引用证据，并在相关句末尾标注 [S1][S2] 等编号。\n"
+        "禁止编造 evidence 中没有的字段/参数/结论；找不到就明确说“证据不足”。\n"
+        "\n"
+        "【覆盖清单（必须逐项回答）】\n"
+
+        "如果某一项证据不足，也必须单独给出该项的小结，并写清楚缺什么证据。\n"
     )
     final_messages: list[dict[str, str]] = [
         {"role": "system", "content": synth_system},

@@ -434,6 +434,9 @@ topbar 点击「🗂 规划」按钮，切换到 Plan & Execute 模式，走 `/v
 
 topbar 点击「🧩 多智能体」按钮，切换到 Multi-Agent 模式，走 `/v1/chat/multi_agent/stream` 端点。
 
+**二次检索（自动 follow-up）：**
+- 当 `critic` 给出 `gaps/suggestions` 且首轮证据较少时，系统会自动触发一次 `retriever_followup` 的二次检索，把新增证据合并后再交给 `synth` 汇总。
+
 **配置项（可选）：**
 - `WEB_SEARCH_ENABLED=true`：全局允许 `web_search`（仍受 `TOOL_POLICY_LEVEL` 影响）
 - `MULTI_RETRIEVER_WEB_SEARCH_ENABLED=true`：仅对 Multi-Agent 的 `retriever` worker 放行 `web_search`

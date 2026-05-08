@@ -110,7 +110,8 @@ def chat_multi_agent_stream(body: MultiAgentChatRequest) -> StreamingResponse:
             full = ""
             for tok in client.chat_stream(synth_messages, temperature=float(getattr(settings, "chat_temperature", 0.2) or 0.2)):
                 full += tok
-                yield _sse("token", {"t": tok})
+                # 与其他流式端点保持一致：token 事件字段名为 delta
+                yield _sse("token", {"delta": tok})
 
             # 写入 assistant 消息
             db.add(Message(session_id=sid, role="assistant", content=full))
