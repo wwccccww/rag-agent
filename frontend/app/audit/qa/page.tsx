@@ -1,22 +1,19 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 
-type ToolAuditItem = {
+type QaAuditItem = {
   id: string;
   created_at: string;
   user_id: string;
   session_id: string | null;
+  kb_collection: string;
   mode: string;
   request_id: string | null;
-  worker?: string | null;
-  tool: string;
-  status: string;
-  elapsed_ms: number | null;
+  user_message: string;
+  assistant_preview: string | null;
+  cited_chunk_ids: string[];
   sources_count: number;
-  tool_args: Record<string, unknown>;
-  error?: string | null;
-  result_preview?: string | null;
 };
 
 function fmtTs(iso: string): string {
@@ -27,15 +24,19 @@ function fmtTs(iso: string): string {
   }
 }
 
-export default function AuditPage() {
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return `${s.slice(0, max)}…`;
+}
+
+export default function QaAuditPage() {
   const [userId, setUserId] = useState("demo");
   const [mode, setMode] = useState("");
-  const [tool, setTool] = useState("");
-  const [status, setStatus] = useState("");
+  const [kbCollection, setKbCollection] = useState("");
+  const [sessionId, setSessionId] = useState("");
   const [requestId, setRequestId] = useState("");
-  const [worker, setWorker] = useState("");
   const [limit, setLimit] = useState(100);
-  const [items, setItems] = useState<ToolAuditItem[]>([]);
+  const [items, setItems] = useState<QaAuditItem[]>([]);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -44,23 +45,22 @@ export default function AuditPage() {
     const p = new URLSearchParams();
     if (userId.trim()) p.set("user_id", userId.trim());
     if (mode.trim()) p.set("mode", mode.trim());
-    if (tool.trim()) p.set("tool", tool.trim());
-    if (status.trim()) p.set("status", status.trim());
+    if (kbCollection.trim()) p.set("kb_collection", kbCollection.trim());
+    if (sessionId.trim()) p.set("session_id", sessionId.trim());
     if (requestId.trim()) p.set("request_id", requestId.trim());
-    if (worker.trim()) p.set("worker", worker.trim());
     p.set("limit", String(limit));
     return p.toString();
-  }, [userId, mode, tool, status, requestId, worker, limit]);
+  }, [userId, mode, kbCollection, sessionId, requestId, limit]);
 
   const load = async () => {
     setLoading(true);
     setErr(null);
     try {
-      const r = await fetch(`/api/audit/tools?${query}`, { cache: "no-store" });
+      const r = await fetch(`/api/audit/qa?${query}`, { cache: "no-store" });
       const t = await r.text();
       if (!r.ok) throw new Error(t || `HTTP ${r.status}`);
       const j = JSON.parse(t) as unknown;
-      setItems(Array.isArray(j) ? (j as ToolAuditItem[]) : []);
+      setItems(Array.isArray(j) ? (j as QaAuditItem[]) : []);
     } catch (e) {
       setErr(e instanceof Error ? e.message : String(e));
       setItems([]);
@@ -77,15 +77,15 @@ export default function AuditPage() {
   return (
     <div className="audit-page audit-layout">
       <div className="kg-header">
-        <h2>工具审计</h2>
+        <h2>问答审计</h2>
         <div className="kg-header-actions">
           <a href="/" className="btn">← 返回对话</a>
-          <a href="/audit/qa" className="btn">💬 问答审计</a>
+          <a href="/audit" className="btn">🧾 工具审计</a>
           <a href="/stats" className="btn">📊 系统统计</a>
         </div>
       </div>
       <p className="field-label kg-intro">
-        查看 <code>tool_audit_logs</code> 中的工具调用记录（权限拒绝/失败/耗时/参数/结果预览）。
+        查看 <code>qa_audit_logs</code>：每轮对话的用户问题、分区、模式、检索引用片段（<code>chunk_id</code>）等。
       </p>
 
       <div className="audit-toolbar">
@@ -96,34 +96,20 @@ export default function AuditPage() {
           <option value="agent">agent</option>
           <option value="plan">plan</option>
           <option value="multi">multi</option>
-          <option value="system">system</option>
         </select>
-        <select className="text-input" value={tool} onChange={(e) => setTool(e.target.value)} title="按 tool 过滤（可选）">
-          <option value="">tool（全部）</option>
-          <option value="search_knowledge_base">search_knowledge_base</option>
-          <option value="recall_user_memory">recall_user_memory</option>
-          <option value="web_search">web_search</option>
-          <option value="fetch_url">fetch_url</option>
-          <option value="python_repl">python_repl</option>
-          <option value="calculate">calculate</option>
-          <option value="get_current_datetime">get_current_datetime</option>
-        </select>
-        <select className="text-input" value={status} onChange={(e) => setStatus(e.target.value)} title="按 status 过滤（可选）">
-          <option value="">status（全部）</option>
-          <option value="ok">ok</option>
-          <option value="denied">denied</option>
-          <option value="error">error</option>
-          <option value="timeout">timeout</option>
-        </select>
-        <input className="text-input" value={requestId} onChange={(e) => setRequestId(e.target.value)} placeholder="request_id（可选）" />
-        <select className="text-input" value={worker} onChange={(e) => setWorker(e.target.value)} title="按 worker 过滤（可选）">
-          <option value="">worker（全部）</option>
-          <option value="supervisor">supervisor</option>
-          <option value="retriever">retriever</option>
-          <option value="solver">solver</option>
-          <option value="critic">critic</option>
-          <option value="synth">synth</option>
-        </select>
+        <input
+          className="text-input"
+          value={kbCollection}
+          onChange={(e) => setKbCollection(e.target.value)}
+          placeholder="kb_collection（可选）"
+        />
+        <input
+          className="text-input audit-mono"
+          value={sessionId}
+          onChange={(e) => setSessionId(e.target.value)}
+          placeholder="session_id UUID（可选）"
+        />
+        <input className="text-input audit-mono" value={requestId} onChange={(e) => setRequestId(e.target.value)} placeholder="request_id（可选）" />
         <input
           className="text-input"
           value={String(limit)}
@@ -143,12 +129,10 @@ export default function AuditPage() {
             <tr>
               <th>时间</th>
               <th>mode</th>
-              <th>tool</th>
-              <th>status</th>
-              <th>耗时</th>
-              <th>sources</th>
+              <th>分区</th>
+              <th>用户问题</th>
+              <th>引用数</th>
               <th>request_id</th>
-              <th>worker</th>
               <th>展开</th>
             </tr>
           </thead>
@@ -156,16 +140,14 @@ export default function AuditPage() {
             {items.map((it) => {
               const isOpen = expanded === it.id;
               return (
-                <>
-                  <tr key={it.id} className={`audit-row ${it.status}`}>
+                <Fragment key={it.id}>
+                  <tr className="audit-row ok">
                     <td>{fmtTs(it.created_at)}</td>
-                    <td>{it.mode}</td>
-                    <td><code>{it.tool}</code></td>
-                    <td><span className={`audit-pill ${it.status}`}>{it.status}</span></td>
-                    <td>{it.elapsed_ms == null ? "-" : `${Math.round(it.elapsed_ms)}ms`}</td>
+                    <td><span className="audit-pill ok">{it.mode}</span></td>
+                    <td><code>{it.kb_collection}</code></td>
+                    <td className="qa-msg-cell" title={it.user_message}>{truncate(it.user_message, 120)}</td>
                     <td>{it.sources_count}</td>
                     <td className="audit-mono">{it.request_id ?? "-"}</td>
-                    <td className="audit-mono">{it.worker ?? "-"}</td>
                     <td>
                       <button className="btn" type="button" onClick={() => setExpanded((cur) => (cur === it.id ? null : it.id))}>
                         {isOpen ? "收起" : "详情"}
@@ -173,29 +155,33 @@ export default function AuditPage() {
                     </td>
                   </tr>
                   {isOpen && (
-                    <tr key={`${it.id}-detail`} className="audit-detail-row">
-                      <td colSpan={9}>
+                    <tr className="audit-detail-row">
+                      <td colSpan={7}>
                         <div className="audit-detail-grid">
                           <div>
-                            <div className="field-label">tool_args</div>
-                            <pre className="audit-pre">{JSON.stringify(it.tool_args ?? {}, null, 2)}</pre>
+                            <div className="field-label">user_message</div>
+                            <pre className="audit-pre qa-pre-wrap">{it.user_message}</pre>
                           </div>
                           <div>
-                            <div className="field-label">error</div>
-                            <pre className="audit-pre">{String(it.error ?? "")}</pre>
-                            <div className="field-label audit-mt10">result_preview</div>
-                            <pre className="audit-pre">{String(it.result_preview ?? "")}</pre>
+                            <div className="field-label">assistant_preview</div>
+                            <pre className="audit-pre qa-pre-wrap">{String(it.assistant_preview ?? "")}</pre>
+                            <div className="field-label audit-mt10">cited_chunk_ids</div>
+                            <pre className="audit-pre">{JSON.stringify(it.cited_chunk_ids ?? [], null, 2)}</pre>
+                            <div className="field-label audit-mt10">session_id</div>
+                            <pre className="audit-pre">{String(it.session_id ?? "-")}</pre>
                           </div>
                         </div>
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               );
             })}
             {items.length === 0 && !loading && (
               <tr>
-                <td colSpan={8} className="field-label">暂无数据。先在 Agent/规划 模式触发一次工具调用后再刷新。</td>
+                <td colSpan={7} className="field-label">
+                  暂无数据。先在任意对话模式完成一轮问答后再刷新（需开启后端 <code>QA_AUDIT_ENABLED</code>）。
+                </td>
               </tr>
             )}
           </tbody>
@@ -204,4 +190,3 @@ export default function AuditPage() {
     </div>
   );
 }
-

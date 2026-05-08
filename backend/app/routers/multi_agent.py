@@ -14,6 +14,7 @@ from app.database import SessionLocal
 from app.models import Message, SessionModel
 from app.services.multi_agent import run_multi_agent
 from app.services.kb_acl import effective_kb_collection
+from app.services.qa_audit import try_record_qa_audit
 from app.services.ollama import OllamaClient
 from app.services.security import sanitize_user_input
 
@@ -116,7 +117,28 @@ def chat_multi_agent_stream(body: MultiAgentChatRequest) -> StreamingResponse:
             sess.updated_at = datetime.now(timezone.utc)
             db.commit()
 
+            merged_sources: list[dict] = []
+            seen_chunk: set[str] = set()
+            for wr in worker_results:
+                for s in wr.sources or []:
+                    cid = s.get("chunk_id")
+                    key = str(cid) if cid is not None else ""
+                    if key and key not in seen_chunk:
+                        seen_chunk.add(key)
+                        merged_sources.append(s)
+
             dt = time.perf_counter() - t0
+            try_record_qa_audit(
+                db,
+                user_id=body.user_id,
+                session_id=sid,
+                kb_collection=kb_coll,
+                mode="multi_agent",
+                request_id=req_id,
+                user_message=body.message,
+                assistant_content=full,
+                sources=merged_sources,
+            )
             yield _sse(
                 "final",
                 {

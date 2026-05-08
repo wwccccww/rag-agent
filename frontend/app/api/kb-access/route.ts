@@ -1,12 +1,11 @@
 import { NextResponse } from "next/server";
-
-const upstream = process.env.FASTAPI_BASE_URL ?? "http://127.0.0.1:8000";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
   const q = url.searchParams.toString();
-  const target = q ? `${upstream}/v1/kb-access?${q}` : `${upstream}/v1/kb-access`;
-  const r = await fetch(target, { cache: "no-store" });
+  const path = q ? `/v1/kb-access?${q}` : `/v1/kb-access`;
+  const r = await fastapiFetch(path, { cache: "no-store" });
   const text = await r.text();
   return new NextResponse(text, {
     status: r.status,

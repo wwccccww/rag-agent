@@ -1960,3 +1960,16 @@ a:hover { text-decoration: underline; }
   overflow: auto;
 }
 .audit-mt10 { margin-top: 10px; }
+
+.qa-msg-cell {
+  max-width: 420px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.qa-pre-wrap {
+  white-space: pre-wrap;
+  word-break: break-word;
+}

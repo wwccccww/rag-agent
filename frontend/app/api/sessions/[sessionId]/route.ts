@@ -1,13 +1,12 @@
 import { NextResponse } from "next/server";
-
-const upstream = process.env.FASTAPI_BASE_URL ?? "http://127.0.0.1:8000";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 type Ctx = { params: Promise<{ sessionId: string }> };
 
 export async function PATCH(req: Request, ctx: Ctx) {
   const { sessionId } = await ctx.params;
   const body = await req.text();
-  const r = await fetch(`${upstream}/v1/sessions/${sessionId}`, {
+  const r = await fastapiFetch(`/v1/sessions/${sessionId}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body,
@@ -21,7 +20,7 @@ export async function PATCH(req: Request, ctx: Ctx) {
 
 export async function DELETE(_: Request, ctx: Ctx) {
   const { sessionId } = await ctx.params;
-  const r = await fetch(`${upstream}/v1/sessions/${sessionId}`, {
+  const r = await fastapiFetch(`/v1/sessions/${sessionId}`, {
     method: "DELETE",
   });
   return new NextResponse(null, { status: r.status });

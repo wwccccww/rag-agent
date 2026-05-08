@@ -4,7 +4,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.requests import Request
+from starlette.responses import JSONResponse
 
+from app.config import settings
 from app.database import Base, engine, init_db
 from app.routers import audit, chat, docs, health, ingest, kb_access, memory, metrics, multi_agent, sessions, stats
 from app.services.reranker import warmup as warmup_reranker
@@ -35,6 +38,27 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def api_key_middleware(request: Request, call_next):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+    k = (getattr(settings, "api_key", None) or "").strip()
+    if not k:
+        return await call_next(request)
+    path = request.url.path
+    if path in ("/",) or path.startswith("/docs") or path.startswith("/openapi.json") or path.startswith("/redoc"):
+        return await call_next(request)
+    if path.startswith("/v1/health"):
+        return await call_next(request)
+    supplied = (request.headers.get("x-api-key") or "").strip()
+    auth = request.headers.get("authorization") or ""
+    if auth.lower().startswith("bearer "):
+        supplied = auth[7:].strip()
+    if supplied != k:
+        return JSONResponse({"detail": "Unauthorized"}, status_code=401)
+    return await call_next(request)
 
 app.include_router(health.router)
 app.include_router(metrics.router)

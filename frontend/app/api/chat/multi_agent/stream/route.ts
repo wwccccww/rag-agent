@@ -1,11 +1,11 @@
 import { NextRequest } from "next/server";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 export const runtime = "nodejs";
 
 export async function POST(req: NextRequest) {
   const body = await req.text();
-  const backend = process.env.BACKEND_URL || "http://127.0.0.1:8000";
-  const res = await fetch(`${backend}/v1/chat/multi_agent/stream`, {
+  const res = await fastapiFetch("/v1/chat/multi_agent/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,
@@ -20,4 +20,3 @@ export async function POST(req: NextRequest) {
     },
   });
 }
-

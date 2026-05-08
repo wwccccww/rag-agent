@@ -176,5 +176,10 @@ class Settings(BaseSettings):
     # 采样率：错误事件采样（0-1，默认 1.0）；性能追踪可后续再加
     sentry_sample_rate: float = 1.0
 
+    # 问答轮次审计：每次 RAG/Agent/Plan/Multi 成功结束写入 qa_audit_logs
+    qa_audit_enabled: bool = True
+    # 非空时除 /、/docs、/openapi.json、/redoc、/v1/health 外需携带 X-API-Key 或 Authorization: Bearer
+    api_key: str | None = None
+
 
 settings = Settings()

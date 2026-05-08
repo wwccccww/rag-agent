@@ -1,11 +1,10 @@
 import { NextResponse } from "next/server";
-
-const upstream = process.env.FASTAPI_BASE_URL ?? "http://127.0.0.1:8000";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 export async function PATCH(req: Request) {
   const url = new URL(req.url);
   const body = await req.text();
-  const r = await fetch(`${upstream}/v1/documents/batch${url.search}`, {
+  const r = await fastapiFetch(`/v1/documents/batch${url.search}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body,

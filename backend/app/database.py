@@ -243,6 +243,26 @@ def ensure_indexes() -> None:
     except Exception as e:
         logging.warning("[DB] user_kb_collections migrate failed: %s", e)
 
+    # 问答审计（表由 ORM create_all）
+    try:
+        with engine.connect() as conn:
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_qa_audit_user_created "
+                    "ON qa_audit_logs (user_id, created_at)"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS idx_qa_audit_session_created "
+                    "ON qa_audit_logs (session_id, created_at)"
+                )
+            )
+            conn.commit()
+        logging.info("[DB] qa_audit_logs indexes ready")
+    except Exception as e:
+        logging.warning("[DB] qa_audit_logs indexes failed: %s", e)
+
 
 def init_db() -> None:
     """建表 + 启用扩展 + 创建索引，失败只记日志不崩溃"""

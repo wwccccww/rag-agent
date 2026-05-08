@@ -3,7 +3,7 @@ import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 export async function GET(req: Request) {
   const url = new URL(req.url);
-  const r = await fastapiFetch(`/v1/kg/entities${url.search}`, { cache: "no-store" });
+  const r = await fastapiFetch(`/v1/audit/qa${url.search}`, { cache: "no-store" });
   const text = await r.text();
   return new NextResponse(text, {
     status: r.status,

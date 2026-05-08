@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -181,6 +181,32 @@ class KGRelation(Base):
 
     subject: Mapped["KGEntity"] = relationship("KGEntity", foreign_keys=[subject_id], back_populates="outgoing")
     object_entity: Mapped["KGEntity"] = relationship("KGEntity", foreign_keys=[object_id], back_populates="incoming")
+
+
+class QaAuditLog(Base):
+    """
+    问答审计：一次对话轮次结束时记录用户问题、生效分区、引用片段 ID。
+    与 tool_audit_logs（工具调用链）互补，便于合规溯源。
+    """
+
+    __tablename__ = "qa_audit_logs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    user_id: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    session_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), nullable=True, index=True)
+    kb_collection: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    # rag / agent / plan / multi_agent
+    mode: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    request_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+
+    user_message: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_preview: Mapped[str | None] = mapped_column(Text, nullable=True)
+    cited_chunk_ids: Mapped[list[str]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
+    sources_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ToolAuditLog(Base):

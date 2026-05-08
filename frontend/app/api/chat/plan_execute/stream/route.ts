@@ -1,10 +1,9 @@
 import { NextResponse } from "next/server";
-
-const upstream = process.env.FASTAPI_BASE_URL ?? "http://127.0.0.1:8000";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
 export async function POST(req: Request) {
   const body = await req.text();
-  const r = await fetch(`${upstream}/v1/chat/plan_execute/stream`, {
+  const r = await fastapiFetch("/v1/chat/plan_execute/stream", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body,

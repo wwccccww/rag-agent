@@ -1,9 +1,11 @@
 import { NextResponse } from "next/server";
+import { fastapiFetch } from "@/lib/fastapi-fetch";
 
-const upstream = process.env.FASTAPI_BASE_URL ?? "http://127.0.0.1:8000";
+type Ctx = { params: Promise<{ sessionId: string }> };
 
-export async function GET(_req: Request, { params }: { params: { sessionId: string } }) {
-  const r = await fetch(`${upstream}/v1/sessions/${params.sessionId}/messages`, { cache: "no-store" });
+export async function GET(_req: Request, ctx: Ctx) {
+  const { sessionId } = await ctx.params;
+  const r = await fastapiFetch(`/v1/sessions/${sessionId}/messages`, { cache: "no-store" });
   const text = await r.text();
   return new NextResponse(text, {
     status: r.status,

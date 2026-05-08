@@ -10,6 +10,7 @@ def _kb_acl_off_for_tests(monkeypatch: pytest.MonkeyPatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "kb_acl_enabled", False, raising=False)
+    monkeypatch.setattr(settings, "api_key", None, raising=False)
 
 
 @pytest.fixture
