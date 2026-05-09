@@ -208,6 +208,59 @@ npm run dev
 
 ---
 
+### 0-D. 引入 MDN Web Docs（方案A：直接导入 GitHub Markdown 源）
+
+适合做离线知识库 / RAG：直接使用 MDN 在 GitHub 上维护的 **Markdown 源文件**（而非抓 HTML）。本项目提供离线脚本把 MDN 源仓库中的 `index.md` 批量入库，并将每篇文档的 `source` 设置为对应的 MDN 页面 URL，便于回答时回溯引用来源。
+
+**仓库选择：**
+- 英文：`mdn/content`
+- 中文：`mdn/translated-content`（语言目录 `zh-cn`）
+
+**配置项（`.env`，可选）：**
+
+```
+MDN_REPO_URL=https://github.com/mdn/content.git
+MDN_REPO_DIR=data/mdn_repo
+MDN_REPO_REF=main
+MDN_LANG=en-us
+# 可选：只导入某些子目录（相对仓库根目录，逗号分隔）
+# MDN_INCLUDE_PATHS=content/files/en-us/web/javascript,content/files/en-us/web/css
+# 可选：排除路径（glob，逗号分隔）
+# 注意：MDN 正文通常在各目录的 index.md，不要排除它，否则会导入 0 篇。
+# MDN_EXCLUDE_GLOBS=**/index.yaml,**/_sidebar.md,**/_redirects.md
+# 可选：最大导入文件数（0=不限制）
+# MDN_MAX_FILES=2000
+```
+
+> 注意：导入量很大时建议先用 `MDN_INCLUDE_PATHS` 限定范围（例如只导入 JavaScript/CSS），避免一次性导入数万篇。
+
+**运行脚本（Windows / PowerShell）：**
+
+```powershell
+cd d:\1study\study\python\rag-agent\backend
+.\.venv\Scripts\Activate.ps1
+
+# 先预览文件数量（不落库）
+python scripts\ingest_mdn.py --dry-run --lang en-us --max-files 200
+
+# 真正导入（doc_type 默认 mdn，可改为 api/tutorial 等）
+python scripts\ingest_mdn.py --lang en-us --kb-collection default --doc-type mdn --max-files 200
+```
+
+**测试步骤：**
+1. 启动 Postgres、Ollama，并启动后端（或确保能连上 DB / Ollama）。
+2. 运行 `python scripts\ingest_mdn.py --dry-run ...` 确认扫描到文件数。
+3. 运行 `python scripts\ingest_mdn.py --lang en-us --max-files 50` 导入少量样本。
+4. 打开前端 `http://localhost:3000/documents`，筛选 `doc_type=mdn`（或你指定的类型）确认文档出现。
+5. 在 RAG 模式提问一个刚导入主题的问题（例如某个 API 的参数含义），确认回答出现 `[S1]` 引用且来源为 `developer.mozilla.org/...`。
+
+**预期输出：**
+- 终端日志出现：`[MDN] repo=... files=...`、`[MDN] done. scanned=... new_docs=... new_chunks=...`
+- 文档列表中能看到 `source` 为 `https://developer.mozilla.org/<lang>/docs/...` 的条目
+- RAG 回答中引用的来源指向 MDN 页面
+
+---
+
 ### 0-B. 知识图谱增强记忆（轻量级，存储于 PostgreSQL）
 
 在原有扁平向量记忆之上引入**实体-关系图谱**，无需新增数据库，全部存储在 PostgreSQL。

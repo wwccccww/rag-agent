@@ -184,5 +184,23 @@ class Settings(BaseSettings):
     # 非空时除 /、/docs、/openapi.json、/redoc、/v1/health 外需携带 X-API-Key 或 Authorization: Bearer
     api_key: str | None = None
 
+    # ── MDN Web Docs（方案A：从 GitHub Markdown 源仓库批量导入）───────────────
+    # 仓库 URL：英文为 mdn/content；中文为 mdn/translated-content
+    mdn_repo_url: str = "https://github.com/mdn/content.git"
+    # 本地仓库存放目录（建议放在 backend/data/ 或 data/ 下，避免污染代码目录）
+    mdn_repo_dir: str = "data/mdn_repo"
+    # 分支/标签（通常 main）
+    mdn_repo_ref: str = "main"
+    # 文档语言目录：英文 en-us；中文 zh-cn（仅 translated-content 仓库中存在）
+    mdn_lang: str = "en-us"
+    # 仅导入这些子目录（逗号分隔；为空表示导入该语言下全部）
+    # 例如：files/en-us/web/javascript,files/en-us/web/css
+    mdn_include_paths: str | None = None
+    # 排除路径（逗号分隔的 glob；相对仓库根目录匹配）
+    # 注意：MDN 的正文通常就在各目录的 index.md，不要默认排除它，否则会导入 0 篇。
+    mdn_exclude_globs: str = "**/index.yaml,**/_sidebar.md,**/_redirects.md"
+    # 最大导入文件数（0 表示不限制；用于防止一次性导入过大）
+    mdn_max_files: int = 0
+
 
 settings = Settings()
